@@ -1,0 +1,6 @@
+{
+  "name": "Immersive Shadowing",
+  "description": "An elegant immersive shadowing app for language learning, featuring YouTube integration and phonetic transcription.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
