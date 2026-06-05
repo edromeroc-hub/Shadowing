@@ -1,6 +1,6 @@
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
+import { createRequire } from "module";
 import { YoutubeTranscript } from "youtube-transcript";
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import dotenv from "dotenv";
@@ -8,6 +8,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const nodeRequire = createRequire(path.join(process.cwd(), "server.ts"));
 
 type TranscriptSegment = {
   text: string;
@@ -21,6 +22,15 @@ type CaptionTrack = {
   languageCode?: string;
   kind?: string;
   vssId?: string;
+};
+
+type VideoRecommendation = {
+  id: string;
+  title: string;
+  channel: string;
+  difficulty: string;
+  thumbnail: string;
+  duration?: string;
 };
 
 const SHADOWING_LEAD_IN_SECONDS = 0.18;
@@ -463,9 +473,187 @@ ${JSON.stringify(transcriptData, null, 2)}`;
   return JSON.parse(responseText);
 }
 
-async function startServer() {
+let youtubeClientPromise: Promise<any> | null = null;
+
+function getYoutubeText(value: any) {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (typeof value.text === "string") return value.text;
+  if (Array.isArray(value.runs)) return value.runs.map((run: any) => run.text || "").join("");
+  return String(value);
+}
+
+function getDifficultyLabel(difficulty: string) {
+  const id = difficulty.toLowerCase();
+  if (id.includes("beginner") || id.includes("iniciante")) return "Iniciante";
+  if (id.includes("advanced") || id.includes("avançado")) return "Avançado";
+  return "Intermediário";
+}
+
+function parseDurationSeconds(durationText?: string) {
+  if (!durationText) return null;
+  const parts = durationText.split(":").map((part) => Number(part));
+  if (parts.some((part) => Number.isNaN(part))) return null;
+  return parts.reduce((total, part) => total * 60 + part, 0);
+}
+
+function getDifficultySearchTerms(difficulty: string) {
+  const difficultyTerms: Record<string, string> = {
+    beginner: "simple short clear English",
+    intermediate: "clear English interview explained",
+    advanced: "advanced English documentary debate lecture",
+  };
+
+  return difficultyTerms[difficulty] || "clear English explained";
+}
+
+function getThemeSearchConfig(theme: string) {
+  const configs: Record<string, { queries: string[]; keywords: string[] }> = {
+    "Viagem e Cultura": {
+      queries: [
+        "travel culture vlog real conversation",
+        "city culture documentary travel guide",
+        "street interview culture travel",
+      ],
+      keywords: ["travel", "culture", "city", "country", "street", "tour", "vlog", "guide", "people"],
+    },
+    "Tecnologia": {
+      queries: [
+        "technology explained innovation",
+        "artificial intelligence technology explained",
+        "tech interview innovation future",
+        "Marques Brownlee tech interview",
+      ],
+      keywords: ["technology", "technologies", "tech", "ai", "artificial intelligence", "innovation", "software", "computer", "robot", "future", "machine learning", "generative"],
+    },
+    "Negócios/Trabalho": {
+      queries: [
+        "business interview startup founder",
+        "workplace productivity career advice",
+        "entrepreneurship business explained",
+      ],
+      keywords: ["business", "work", "workplace", "career", "startup", "founder", "company", "productivity", "entrepreneur", "professional"],
+    },
+    "Cinema e Séries": {
+      queries: [
+        "movie review interview film",
+        "actor interview movie scene",
+        "film analysis TV series explained",
+      ],
+      keywords: ["movie", "film", "actor", "cinema", "series", "tv", "scene", "review", "interview", "trailer"],
+    },
+    "Notícias e Debates": {
+      queries: [
+        "news debate current events discussion",
+        "world news explained discussion",
+        "debate interview politics society",
+      ],
+      keywords: ["news", "debate", "world", "politics", "society", "current", "explained", "interview", "discussion"],
+    },
+  };
+
+  return configs[theme] || {
+    queries: [`${theme} English explained`, `${theme} interview discussion`],
+    keywords: theme.toLowerCase().split(/\s+/),
+  };
+}
+
+function buildRecommendationQueries(theme: string, difficulty: string) {
+  const config = getThemeSearchConfig(theme);
+  const levelTerms = getDifficultySearchTerms(difficulty);
+  return config.queries.map((query) => `${query} ${levelTerms}`);
+}
+
+function scoreVideoForTheme(video: VideoRecommendation, theme: string) {
+  const config = getThemeSearchConfig(theme);
+  const haystack = `${video.title} ${video.channel}`.toLowerCase();
+  const keywordScore = config.keywords.reduce((score, keyword) => (
+    haystack.includes(keyword.toLowerCase()) ? score + 2 : score
+  ), 0);
+  const learningPenalty = /learn english|learning english|english lesson|english grammar|vocabulary/i.test(haystack) ? 4 : 0;
+  const careerPenalty = theme === "Negócios/Trabalho"
+    ? 0
+    : /job interview questions|how to pass|recruiter|resume|cv|hiring/i.test(haystack) ? 4 : 0;
+  return keywordScore - learningPenalty - careerPenalty;
+}
+
+async function getYoutubeClient() {
+  if (!youtubeClientPromise) {
+    youtubeClientPromise = Promise.resolve().then(async () => {
+      const { Innertube } = nodeRequire("youtubei.js");
+      return Innertube.create({ lang: "en", location: "US" });
+    });
+  }
+  return youtubeClientPromise;
+}
+
+function mapSearchVideo(video: any, difficulty: string): VideoRecommendation | null {
+  const id = video.id || video.video_id;
+  const title = getYoutubeText(video.title);
+  const duration = getYoutubeText(video.duration);
+  const durationSeconds = parseDurationSeconds(duration);
+
+  if (!id || !title) return null;
+  if (durationSeconds !== null && (durationSeconds < 60 || durationSeconds > 20 * 60)) return null;
+  if (/shorts?|compilation|playlist|live/i.test(title)) return null;
+
+  return {
+    id,
+    title,
+    channel: video.author?.name || getYoutubeText(video.author) || "YouTube",
+    difficulty: getDifficultyLabel(difficulty),
+    thumbnail: `https://img.youtube.com/vi/${id}/mqdefault.jpg`,
+    duration,
+  };
+}
+
+async function hasAccessibleTranscript(videoId: string) {
+  try {
+    const segments = await fetchYouTubeTranscriptSegments(videoId);
+    return segments.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function searchYoutubeRecommendations(theme: string, difficulty: string) {
+  const yt = await getYoutubeClient();
+  const seen = new Set<string>();
+  const videos: VideoRecommendation[] = [];
+
+  for (const query of buildRecommendationQueries(theme, difficulty)) {
+    const searchResults = await yt.search(query, { type: "video" });
+    const mappedVideos = (searchResults.videos || searchResults.results || [])
+      .map((video: any) => mapSearchVideo(video, difficulty))
+      .filter(Boolean) as VideoRecommendation[];
+
+    for (const video of mappedVideos) {
+      if (seen.has(video.id)) continue;
+      seen.add(video.id);
+      videos.push(video);
+    }
+  }
+
+  const rankedVideos = videos
+    .map((video) => ({ video, score: scoreVideoForTheme(video, theme) }))
+    .filter((result) => result.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map((result) => result.video)
+    .slice(0, 12);
+
+  const checked = await Promise.all(rankedVideos.map(async (video) => ({
+    video,
+    hasTranscript: await hasAccessibleTranscript(video.id),
+  })));
+
+  return checked
+    .filter((result) => result.hasTranscript)
+    .map((result) => result.video)
+    .slice(0, 6);
+}
+
+export async function createApp({ includeFrontend = true } = {}) {
   const app = express();
-  const PORT = 3000;
 
   app.use(express.json());
 
@@ -588,10 +776,18 @@ Return an overall score 0-100.`;
     try {
       console.log(`Getting video recommendations for theme: ${theme}, difficulty: ${difficulty}`);
 
-      // Filter catalog
+      const liveRecommendations = await searchYoutubeRecommendations(theme, difficulty);
+
+      if (liveRecommendations.length > 0) {
+        return res.json(liveRecommendations);
+      }
+
+      console.warn("Live YouTube recommendation search returned no usable videos. Falling back to catalog.");
+
+      const difficultyLabel = getDifficultyLabel(difficulty);
       const themeVids = VIDEO_CATALOG.filter(v => 
-        v.theme.toLowerCase() === theme.toLowerCase() || 
-        v.difficulty.toLowerCase() === difficulty.toLowerCase().split(' - ')[0].toLowerCase()
+        v.theme.toLowerCase() === theme.toLowerCase() && 
+        v.difficulty.toLowerCase() === difficultyLabel.toLowerCase()
       );
 
       // Shuffle and pick 3
@@ -611,14 +807,18 @@ Return an overall score 0-100.`;
         thumbnail: `https://img.youtube.com/vi/${video.id}/mqdefault.jpg`
       }));
 
-      // Simulate a small delay for the AI feeling requested by the user
-      setTimeout(() => {
-        res.json(enrichedRecommendations);
-      }, 1500);
+      res.json(enrichedRecommendations);
 
     } catch (error: any) {
       console.error("Error in recommendVideos:", error);
-      res.status(500).json({ error: error.message || "Something went wrong" });
+      const fallbackRecommendations = VIDEO_CATALOG.slice(0, 3).map((video: any) => ({
+        id: video.id,
+        title: video.title,
+        channel: video.channel,
+        difficulty: video.difficulty,
+        thumbnail: `https://img.youtube.com/vi/${video.id}/mqdefault.jpg`
+      }));
+      res.json(fallbackRecommendations);
     }
   });
 
@@ -749,24 +949,36 @@ ${JSON.stringify(transcriptData, null, 2)}`;
     }
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
+  if (includeFrontend) {
+    // Vite middleware for development
+    if (process.env.NODE_ENV !== "production") {
+      const { createServer: createViteServer } = await import("vite");
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+    } else {
+      const distPath = path.join(process.cwd(), "dist");
+      app.use(express.static(distPath));
+      app.get("*", (req, res) => {
+        res.sendFile(path.join(distPath, "index.html"));
+      });
+    }
   }
+
+  return app;
+}
+
+async function startServer() {
+  const PORT = 3000;
+  const app = await createApp({ includeFrontend: true });
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
 
-startServer();
+if (process.env.VERCEL !== "1") {
+  startServer();
+}
