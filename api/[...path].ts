@@ -1,5 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { createApp } from "../server.ts";
+import { createRequire } from "module";
+
+const apiRequire = createRequire(import.meta.url);
+const { createApp } = apiRequire("../dist/server.cjs");
 
 const appPromise = createApp({ includeFrontend: false });
 
