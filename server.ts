@@ -1,6 +1,5 @@
 import express from "express";
 import path from "path";
-import { createRequire } from "module";
 import { YoutubeTranscript } from "youtube-transcript";
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import dotenv from "dotenv";
@@ -8,7 +7,6 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-const nodeRequire = createRequire(path.join(process.cwd(), "server.ts"));
 
 type TranscriptSegment = {
   text: string;
@@ -473,11 +471,10 @@ ${JSON.stringify(transcriptData, null, 2)}`;
   return JSON.parse(responseText);
 }
 
-let youtubeClientPromise: Promise<any> | null = null;
-
 function getYoutubeText(value: any) {
   if (!value) return "";
   if (typeof value === "string") return value;
+  if (typeof value.simpleText === "string") return value.simpleText;
   if (typeof value.text === "string") return value.text;
   if (Array.isArray(value.runs)) return value.runs.map((run: any) => run.text || "").join("");
   return String(value);
@@ -577,16 +574,6 @@ function scoreVideoForTheme(video: VideoRecommendation, theme: string) {
   return keywordScore - learningPenalty - careerPenalty;
 }
 
-async function getYoutubeClient() {
-  if (!youtubeClientPromise) {
-    youtubeClientPromise = Promise.resolve().then(async () => {
-      const { Innertube } = nodeRequire("youtubei.js");
-      return Innertube.create({ lang: "en", location: "US" });
-    });
-  }
-  return youtubeClientPromise;
-}
-
 function mapSearchVideo(video: any, difficulty: string): VideoRecommendation | null {
   const id = video.id || video.video_id;
   const title = getYoutubeText(video.title);
@@ -607,6 +594,73 @@ function mapSearchVideo(video: any, difficulty: string): VideoRecommendation | n
   };
 }
 
+function collectVideoRenderers(value: any, output: any[] = []) {
+  if (!value || typeof value !== "object") return output;
+
+  if (value.videoRenderer) {
+    output.push(value.videoRenderer);
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectVideoRenderers(item, output);
+    }
+    return output;
+  }
+
+  for (const item of Object.values(value)) {
+    collectVideoRenderers(item, output);
+  }
+
+  return output;
+}
+
+function mapVideoRenderer(videoRenderer: any, difficulty: string): VideoRecommendation | null {
+  const id = videoRenderer.videoId;
+  const title = getYoutubeText(videoRenderer.title);
+  const duration = getYoutubeText(videoRenderer.lengthText);
+  const durationSeconds = parseDurationSeconds(duration);
+
+  if (!id || !title) return null;
+  if (durationSeconds !== null && (durationSeconds < 60 || durationSeconds > 20 * 60)) return null;
+  if (/shorts?|compilation|playlist|live/i.test(title)) return null;
+
+  return {
+    id,
+    title,
+    channel: getYoutubeText(videoRenderer.ownerText) || getYoutubeText(videoRenderer.shortBylineText) || "YouTube",
+    difficulty: getDifficultyLabel(difficulty),
+    thumbnail: `https://img.youtube.com/vi/${id}/mqdefault.jpg`,
+    duration,
+  };
+}
+
+async function searchYoutubePage(query: string, difficulty: string) {
+  const url = new URL("https://www.youtube.com/results");
+  url.searchParams.set("search_query", query);
+  url.searchParams.set("sp", "EgIQAQ%3D%3D");
+
+  const response = await fetch(url, {
+    headers: {
+      "Accept-Language": "en-US,en;q=0.9",
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`YouTube search failed: ${response.status}`);
+  }
+
+  const html = await response.text();
+  const initialDataJson = extractJsonObjectAfter(html, "ytInitialData");
+  if (!initialDataJson) return [];
+
+  const initialData = JSON.parse(initialDataJson);
+  return collectVideoRenderers(initialData)
+    .map((videoRenderer) => mapVideoRenderer(videoRenderer, difficulty))
+    .filter(Boolean) as VideoRecommendation[];
+}
+
 async function hasAccessibleTranscript(videoId: string) {
   try {
     const segments = await fetchYouTubeTranscriptSegments(videoId);
@@ -617,15 +671,11 @@ async function hasAccessibleTranscript(videoId: string) {
 }
 
 async function searchYoutubeRecommendations(theme: string, difficulty: string) {
-  const yt = await getYoutubeClient();
   const seen = new Set<string>();
   const videos: VideoRecommendation[] = [];
 
   for (const query of buildRecommendationQueries(theme, difficulty)) {
-    const searchResults = await yt.search(query, { type: "video" });
-    const mappedVideos = (searchResults.videos || searchResults.results || [])
-      .map((video: any) => mapSearchVideo(video, difficulty))
-      .filter(Boolean) as VideoRecommendation[];
+    const mappedVideos = await searchYoutubePage(query, difficulty);
 
     for (const video of mappedVideos) {
       if (seen.has(video.id)) continue;
