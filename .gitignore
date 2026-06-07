@@ -7,3 +7,4 @@ coverage/
 .env*
 !.env.example
 app/applet/
+.vercel
