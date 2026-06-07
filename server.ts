@@ -635,6 +635,32 @@ function mapVideoRenderer(videoRenderer: any, difficulty: string): VideoRecommen
   };
 }
 
+function getCatalogRecommendations(catalog: any[], theme: string, difficulty: string, excludeIds = new Set<string>()) {
+  const difficultyLabel = getDifficultyLabel(difficulty);
+  const exactMatches = catalog.filter(v => 
+    v.theme.toLowerCase() === theme.toLowerCase() && 
+    v.difficulty.toLowerCase() === difficultyLabel.toLowerCase() &&
+    !excludeIds.has(v.id)
+  );
+  const themeMatches = catalog.filter(v =>
+    v.theme.toLowerCase() === theme.toLowerCase() &&
+    !excludeIds.has(v.id)
+  );
+  const fallbackMatches = catalog.filter(v => !excludeIds.has(v.id));
+  const candidates = [...exactMatches, ...themeMatches, ...fallbackMatches];
+  const deduped = candidates.filter((video, index) => (
+    candidates.findIndex((candidate) => candidate.id === video.id) === index
+  ));
+
+  return deduped.map((video: any) => ({
+    id: video.id,
+    title: video.title,
+    channel: video.channel,
+    difficulty: video.difficulty,
+    thumbnail: `https://img.youtube.com/vi/${video.id}/mqdefault.jpg`
+  }));
+}
+
 async function searchYoutubePage(query: string, difficulty: string) {
   const url = new URL("https://www.youtube.com/results");
   url.searchParams.set("search_query", query);
@@ -828,47 +854,24 @@ Return an overall score 0-100.`;
 
       const liveRecommendations = await searchYoutubeRecommendations(theme, difficulty);
 
-      if (liveRecommendations.length > 0) {
+      if (liveRecommendations.length >= 3) {
         return res.json(liveRecommendations);
+      }
+
+      if (liveRecommendations.length > 0) {
+        const excludeIds = new Set(liveRecommendations.map((video) => video.id));
+        const topUpRecommendations = getCatalogRecommendations(VIDEO_CATALOG, theme, difficulty, excludeIds)
+          .slice(0, 3 - liveRecommendations.length);
+        return res.json([...liveRecommendations, ...topUpRecommendations]);
       }
 
       console.warn("Live YouTube recommendation search returned no usable videos. Falling back to catalog.");
 
-      const difficultyLabel = getDifficultyLabel(difficulty);
-      const themeVids = VIDEO_CATALOG.filter(v => 
-        v.theme.toLowerCase() === theme.toLowerCase() && 
-        v.difficulty.toLowerCase() === difficultyLabel.toLowerCase()
-      );
-
-      // Shuffle and pick 3
-      const shuffled = themeVids.sort(() => 0.5 - Math.random());
-      let top3 = shuffled.slice(0, 3);
-      
-      // Fallback if empty
-      if (top3.length === 0) {
-        top3 = VIDEO_CATALOG.slice(0, 3);
-      }
-
-      const enrichedRecommendations = top3.map((video: any) => ({
-        id: video.id,
-        title: video.title,
-        channel: video.channel,
-        difficulty: video.difficulty,
-        thumbnail: `https://img.youtube.com/vi/${video.id}/mqdefault.jpg`
-      }));
-
-      res.json(enrichedRecommendations);
+      res.json(getCatalogRecommendations(VIDEO_CATALOG, theme, difficulty).slice(0, 3));
 
     } catch (error: any) {
       console.error("Error in recommendVideos:", error);
-      const fallbackRecommendations = VIDEO_CATALOG.slice(0, 3).map((video: any) => ({
-        id: video.id,
-        title: video.title,
-        channel: video.channel,
-        difficulty: video.difficulty,
-        thumbnail: `https://img.youtube.com/vi/${video.id}/mqdefault.jpg`
-      }));
-      res.json(fallbackRecommendations);
+      res.json(getCatalogRecommendations(VIDEO_CATALOG, theme, difficulty).slice(0, 3));
     }
   });
 
