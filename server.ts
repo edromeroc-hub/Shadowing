@@ -1024,7 +1024,7 @@ ${JSON.stringify(transcriptData, null, 2)}`;
 }
 
 async function startServer() {
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT || 3000);
   const app = await createApp({ includeFrontend: true });
 
   app.listen(PORT, "0.0.0.0", () => {
