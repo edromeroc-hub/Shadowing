@@ -2,11 +2,14 @@ import express from "express";
 import path from "path";
 import { YoutubeTranscript } from "youtube-transcript";
 import { GoogleGenAI, Type, Schema } from "@google/genai";
+import { ProxyAgent } from "undici";
 import dotenv from "dotenv";
 
 dotenv.config();
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const youtubeProxyUrl = process.env.YOUTUBE_PROXY_URL;
+const youtubeProxyAgent = youtubeProxyUrl ? new ProxyAgent(youtubeProxyUrl) : null;
 
 type TranscriptSegment = {
   text: string;
@@ -80,6 +83,14 @@ function cleanTranscriptText(value: string) {
     .replace(/\[[^\]]+\]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function youtubeFetch(input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1] = {}) {
+  if (!youtubeProxyAgent) return fetch(input, init);
+  return fetch(input, {
+    ...init,
+    dispatcher: youtubeProxyAgent,
+  } as Parameters<typeof fetch>[1] & { dispatcher: ProxyAgent });
 }
 
 function normalizeTranscriptSegments(segments: TranscriptSegment[]) {
@@ -258,7 +269,7 @@ function pickBestCaptionTrack(tracks: CaptionTrack[]) {
 
 async function getCaptionTracksFromYouTubei(videoId: string) {
   const clientVersion = "20.10.38";
-  const response = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
+  const response = await youtubeFetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -284,7 +295,7 @@ async function getCaptionTracksFromYouTubei(videoId: string) {
 }
 
 async function getCaptionTracksFromWatchPage(videoId: string) {
-  const response = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
+  const response = await youtubeFetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
     headers: {
       "Accept-Language": "en-US,en;q=0.9",
       "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -367,7 +378,7 @@ function parseXmlCaptions(xml: string) {
 }
 
 async function fetchSegmentsFromCaptionTrack(track: CaptionTrack) {
-  const response = await fetch(track.baseUrl, {
+  const response = await youtubeFetch(track.baseUrl, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36,gzip(gfe)",
     },
@@ -385,7 +396,10 @@ async function fetchSegmentsFromCaptionTrack(track: CaptionTrack) {
 }
 
 async function fetchSegmentsWithYoutubeTranscript(videoId: string, lang?: string) {
-  const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId, lang ? { lang } : undefined);
+  const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId, {
+    ...(lang ? { lang } : {}),
+    fetch: youtubeFetch,
+  });
   return normalizeTranscriptSegments(
     transcriptItems.map((item) => ({
       text: item.text,
@@ -666,7 +680,7 @@ async function searchYoutubePage(query: string, difficulty: string) {
   url.searchParams.set("search_query", query);
   url.searchParams.set("sp", "EgIQAQ%3D%3D");
 
-  const response = await fetch(url, {
+  const response = await youtubeFetch(url, {
     headers: {
       "Accept-Language": "en-US,en;q=0.9",
       "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -878,7 +892,7 @@ Return an overall score 0-100.`;
   app.get("/api/test-transcript/:videoId", async (req, res) => {
     try {
       const { videoId } = req.params;
-      const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
+      const response = await youtubeFetch(`https://www.youtube.com/watch?v=${videoId}`);
       const html = await response.text();
       let hasCaptionTracks = html.includes('"captionTracks"');
       let hasPlayerResponse = html.includes('ytInitialPlayerResponse');
