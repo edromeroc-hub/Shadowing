@@ -7,7 +7,8 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
+const ai = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
 const youtubeProxyUrl = process.env.YOUTUBE_PROXY_URL;
 const youtubeProxyAgent = youtubeProxyUrl ? new ProxyAgent(youtubeProxyUrl) : null;
 
@@ -206,6 +207,20 @@ function groupSegmentsForShadowing(segments: TranscriptSegment[]) {
   return applyShadowingBuffer(phrases)
     .filter((phrase) => phrase.end - phrase.start >= SHADOWING_MIN_SECONDS)
     .slice(0, 60);
+}
+
+function isUsableGeminiKey() {
+  if (!geminiApiKey) return false;
+  const lowerKey = geminiApiKey.toLowerCase();
+  return !["dummy", "my_gemini_api_key", "your_gemini_api_key"].includes(lowerKey);
+}
+
+function toBasicPhrases(transcriptData: TranscriptSegment[]) {
+  return transcriptData.map((phrase) => ({
+    ...phrase,
+    phonetic: "",
+    translation: "",
+  }));
 }
 
 function extractJsonObjectAfter(html: string, marker: string) {
@@ -460,6 +475,10 @@ async function fetchYouTubeTranscriptSegments(videoId: string) {
 }
 
 async function enrichTranscript(transcriptData: TranscriptSegment[]) {
+  if (!ai || !isUsableGeminiKey()) {
+    throw new Error("Gemini API key is not configured.");
+  }
+
   const prompt = `You are an expert language teacher. I will provide you with a JSON array representing the transcript of an English YouTube video.
 For each item in the array, translate the 'text' into Portuguese (PT-BR) and provide its phonetic transcription using the International Phonetic Alphabet (IPA).
 Return the exact same structure but include 'phonetic' and 'translation' fields. Do not alter the start and end values.
@@ -494,11 +513,110 @@ function getYoutubeText(value: any) {
   return String(value);
 }
 
+function decodeJsonString(value: string) {
+  try {
+    return JSON.parse(`"${value.replace(/"/g, '\\"')}"`);
+  } catch {
+    return value;
+  }
+}
+
+function extractHtmlMeta(html: string, property: string) {
+  const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regexes = [
+    new RegExp(`<meta[^>]+property=["']${escaped}["'][^>]+content=["']([^"']+)["']`, "i"),
+    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']${escaped}["']`, "i"),
+    new RegExp(`<meta[^>]+name=["']${escaped}["'][^>]+content=["']([^"']+)["']`, "i"),
+  ];
+
+  for (const regex of regexes) {
+    const match = html.match(regex);
+    if (match?.[1]) return decodeHtmlEntities(match[1]);
+  }
+
+  return "";
+}
+
+async function getYouTubeVideoMetadata(videoId: string): Promise<VideoRecommendation> {
+  const fallback = {
+    id: videoId,
+    title: `YouTube ${videoId}`,
+    channel: "YouTube",
+    difficulty: "Intermediário",
+    thumbnail: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
+  };
+
+  try {
+    const oembedUrl = new URL("https://www.youtube.com/oembed");
+    oembedUrl.searchParams.set("url", `https://www.youtube.com/watch?v=${videoId}`);
+    oembedUrl.searchParams.set("format", "json");
+
+    const response = await youtubeFetch(oembedUrl, {
+      headers: {
+        "Accept-Language": "en-US,en;q=0.9",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+      },
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      return {
+        ...fallback,
+        title: cleanTranscriptText(data.title || fallback.title),
+        channel: cleanTranscriptText(data.author_name || fallback.channel),
+        thumbnail: data.thumbnail_url || fallback.thumbnail,
+      };
+    }
+  } catch (error: any) {
+    console.warn("YouTube oEmbed metadata failed:", error.message);
+  }
+
+  try {
+    const response = await youtubeFetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
+      headers: {
+        "Accept-Language": "en-US,en;q=0.9",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+      },
+    });
+
+    if (!response.ok) return fallback;
+    const html = await response.text();
+    const title =
+      extractHtmlMeta(html, "og:title") ||
+      decodeJsonString(html.match(/"title":"([^"]+)"/)?.[1] || "") ||
+      fallback.title;
+    const channel =
+      decodeJsonString(html.match(/"ownerChannelName":"([^"]+)"/)?.[1] || "") ||
+      extractHtmlMeta(html, "author") ||
+      fallback.channel;
+
+    return {
+      ...fallback,
+      title: cleanTranscriptText(title),
+      channel: cleanTranscriptText(channel),
+      thumbnail: extractHtmlMeta(html, "og:image") || fallback.thumbnail,
+    };
+  } catch (error: any) {
+    console.warn("YouTube watch metadata failed:", error.message);
+    return fallback;
+  }
+}
+
 function getDifficultyLabel(difficulty: string) {
   const id = difficulty.toLowerCase();
   if (id.includes("beginner") || id.includes("iniciante")) return "Iniciante";
   if (id.includes("advanced") || id.includes("avançado")) return "Avançado";
   return "Intermediário";
+}
+
+function inferThemeFromText(title = "", channel = "") {
+  const haystack = `${title} ${channel}`.toLowerCase();
+  if (/flight|aviation|pilot|aircraft|airplane|airport|atc|runway|cockpit/.test(haystack)) return "Viagem e Cultura";
+  if (/\b(tech|ai|software|computer|phone|robot|future|innovation)\b/.test(haystack)) return "Tecnologia";
+  if (/business|work|career|startup|founder|company|productivity/.test(haystack)) return "Negócios/Trabalho";
+  if (/movie|film|actor|cinema|series|trailer|scene/.test(haystack)) return "Cinema e Séries";
+  if (/news|debate|politics|world|society|current/.test(haystack)) return "Notícias e Debates";
+  return "Viagem e Cultura";
 }
 
 function parseDurationSeconds(durationText?: string) {
@@ -794,6 +912,10 @@ If a word was pronounced poorly, set 'correct' to false and provide a short phon
 If the word was pronounced ok, set 'correct' to true and tip to "".
 Return an overall score 0-100.`;
 
+      if (!ai || !isUsableGeminiKey()) {
+        throw new Error("Gemini API key is not configured.");
+      }
+
       const response = await ai.models.generateContent({
         model: "gemini-1.5-flash",
         contents: [
@@ -889,6 +1011,65 @@ Return an overall score 0-100.`;
     }
   });
 
+  app.get("/api/videoMetadata/:videoId", async (req, res) => {
+    const { videoId } = req.params;
+
+    if (!videoId) {
+      return res.status(400).json({ error: "videoId is required" });
+    }
+
+    try {
+      const metadata = await getYouTubeVideoMetadata(videoId);
+      res.json(metadata);
+    } catch (error: any) {
+      console.error("Error in videoMetadata:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch video metadata" });
+    }
+  });
+
+  app.post("/api/recommendSimilarVideos", async (req, res) => {
+    const { videoId, title, channel, theme } = req.body;
+
+    try {
+      const metadata = videoId ? await getYouTubeVideoMetadata(videoId) : null;
+      const baseTitle = cleanTranscriptText(title || metadata?.title || "");
+      const baseChannel = cleanTranscriptText(channel || metadata?.channel || "");
+      const queryParts = [
+        baseChannel,
+        baseTitle
+          .replace(/[^\w\s]/g, " ")
+          .split(/\s+/)
+          .filter((word) => word.length > 3)
+          .slice(0, 6)
+          .join(" "),
+        "English video clear speech",
+      ].filter(Boolean);
+
+      const liveVideos = await searchYoutubePage(queryParts.join(" "), "intermediate");
+      const fallbackTheme = theme || inferThemeFromText(baseTitle, baseChannel);
+      const deduped = liveVideos
+        .filter((video) => video.id !== videoId)
+        .filter((video) => !/learn english|english learners|pronunciation practice|english lesson|grammar|vocabulary/i.test(`${video.title} ${video.channel}`))
+        .map((video) => ({
+          ...video,
+          difficulty: "Parecido",
+        }));
+      const themedVideos = deduped.filter((video) => (
+        (baseChannel && video.channel.toLowerCase().includes(baseChannel.toLowerCase())) ||
+        scoreVideoForTheme(video, fallbackTheme) > 0
+      ));
+
+      if (themedVideos.length > 0) {
+        return res.json(themedVideos.slice(0, 6));
+      }
+
+      return res.json(getCatalogRecommendations(VIDEO_CATALOG, fallbackTheme, "intermediate", new Set(videoId ? [videoId] : [])).slice(0, 6));
+    } catch (error: any) {
+      console.error("Error in recommendSimilarVideos:", error);
+      res.json(getCatalogRecommendations(VIDEO_CATALOG, theme || "Viagem e Cultura", "intermediate", new Set(videoId ? [videoId] : [])).slice(0, 6));
+    }
+  });
+
   app.get("/api/test-transcript/:videoId", async (req, res) => {
     try {
       const { videoId } = req.params;
@@ -929,29 +1110,17 @@ Return an overall score 0-100.`;
     }
 
     try {
-      console.log(`Sending ${transcriptData.length} manual transcript items to Gemini...`);
+      const manualPhrases = groupSegmentsForShadowing(transcriptData);
+      console.log(`Processing ${manualPhrases.length} manual transcript items...`);
 
-      const prompt = `You are an expert language teacher. I will provide you with a JSON array representing the transcript of an English YouTube video. 
-For each item in the array, translate the 'text' into Portuguese (PT-BR) and provide its phonetic transcription using the International Phonetic Alphabet (IPA).
-Return the exact same structure but include 'phonetic' and 'translation' fields. Do not alter the start and end values.
-Here is the transcript data:
-${JSON.stringify(transcriptData, null, 2)}`;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-1.5-flash",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: ENRICHED_TRANSCRIPT_SCHEMA,
-          temperature: 0.2, // Low temperature for more deterministic output
-        },
-      });
-
-      const responseText = response.text;
-      if (!responseText) {
-          throw new Error("Empty response from Gemini.");
+      let enrichedPhrases;
+      try {
+        enrichedPhrases = await enrichTranscript(manualPhrases);
+      } catch (enrichmentError: any) {
+        console.error("Manual transcript enrichment failed:", enrichmentError.message);
+        res.setHeader("X-Transcript-Enrichment", "failed");
+        return res.json(toBasicPhrases(manualPhrases));
       }
-      const enrichedPhrases = JSON.parse(responseText);
       
       console.log(`Successfully generated ${enrichedPhrases.length} enriched phrases (manual).`);
       return res.json(enrichedPhrases);
@@ -998,11 +1167,7 @@ ${JSON.stringify(transcriptData, null, 2)}`;
       } catch (enrichmentError: any) {
         console.error("Transcript enrichment failed:", enrichmentError.message);
         res.setHeader("X-Transcript-Enrichment", "failed");
-        return res.json(transcriptData.map((phrase) => ({
-          ...phrase,
-          phonetic: "",
-          translation: "",
-        })));
+        return res.json(toBasicPhrases(transcriptData));
       }
       
       console.log(`Successfully generated ${enrichedPhrases.length} enriched phrases.`);

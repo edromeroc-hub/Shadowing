@@ -1,9 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import YouTube from 'react-youtube';
-import { Mic, SkipBack, SkipForward, Repeat, Link2, Play, Download, Loader2, LogIn, LogOut, ArrowLeft, Search, Youtube, Target, History, Trash2 } from 'lucide-react';
-import { auth, storage } from './lib/firebase';
-import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, signOut } from 'firebase/auth';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { Mic, SkipBack, SkipForward, Repeat, Link2, Play, Loader2, LogIn, LogOut, ArrowLeft, Search, Youtube, Target, History, Trash2, UserPlus } from 'lucide-react';
 
 type Phrase = {
   start: number;
@@ -17,18 +14,43 @@ type StudyHistoryItem = {
   videoId: string;
   url: string;
   title: string;
+  channel?: string;
+  theme?: string;
   thumbnail: string;
   phraseIndex: number;
   phraseCount: number;
   lastStudiedAt: number;
 };
 
-const STUDY_HISTORY_KEY = 'shadowing.studyHistory.v1';
+type LocalUser = {
+  id: string;
+  name: string;
+  email: string;
+};
+
+type StoredLocalUser = LocalUser & {
+  password: string;
+};
+
+type VideoMetadata = {
+  id: string;
+  title: string;
+  channel: string;
+  thumbnail: string;
+};
+
+const LOCAL_USERS_KEY = 'shadowing.localUsers.v1';
+const LOCAL_SESSION_KEY = 'shadowing.localSession.v1';
+const STUDY_HISTORY_KEY_PREFIX = 'shadowing.studyHistory.v2';
 const MAX_STUDY_HISTORY_ITEMS = 8;
 
-function readStudyHistory(): StudyHistoryItem[] {
+function getStudyHistoryKey(userId?: string) {
+  return `${STUDY_HISTORY_KEY_PREFIX}.${userId || 'guest'}`;
+}
+
+function readStudyHistory(userId?: string): StudyHistoryItem[] {
   try {
-    const raw = localStorage.getItem(STUDY_HISTORY_KEY);
+    const raw = localStorage.getItem(getStudyHistoryKey(userId));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
@@ -37,8 +59,55 @@ function readStudyHistory(): StudyHistoryItem[] {
   }
 }
 
-function writeStudyHistory(items: StudyHistoryItem[]) {
-  localStorage.setItem(STUDY_HISTORY_KEY, JSON.stringify(items.slice(0, MAX_STUDY_HISTORY_ITEMS)));
+function writeStudyHistory(items: StudyHistoryItem[], userId?: string) {
+  localStorage.setItem(getStudyHistoryKey(userId), JSON.stringify(items.slice(0, MAX_STUDY_HISTORY_ITEMS)));
+}
+
+function readLocalUsers(): StoredLocalUser[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_USERS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalUsers(users: StoredLocalUser[]) {
+  localStorage.setItem(LOCAL_USERS_KEY, JSON.stringify(users));
+}
+
+function readLocalSession(): LocalUser | null {
+  try {
+    const raw = localStorage.getItem(LOCAL_SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalSession(user: LocalUser | null) {
+  if (!user) {
+    localStorage.removeItem(LOCAL_SESSION_KEY);
+    return;
+  }
+  localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(user));
+}
+
+function mergeGuestHistoryIntoUser(userId: string) {
+  const guestHistory = readStudyHistory();
+  if (guestHistory.length === 0) return readStudyHistory(userId);
+
+  const userHistory = readStudyHistory(userId);
+  const merged = [
+    ...userHistory,
+    ...guestHistory.filter((guestItem) => !userHistory.some((userItem) => userItem.videoId === guestItem.videoId)),
+  ]
+    .sort((a, b) => b.lastStudiedAt - a.lastStudiedAt)
+    .slice(0, MAX_STUDY_HISTORY_ITEMS);
+
+  writeStudyHistory(merged, userId);
+  return merged;
 }
 
 function formatLastStudiedAt(timestamp: number) {
@@ -49,6 +118,16 @@ function formatLastStudiedAt(timestamp: number) {
   if (diffHours < 24) return `${diffHours} h atrás`;
   const diffDays = Math.floor(diffHours / 24);
   return `${diffDays} d atrás`;
+}
+
+function inferThemeFromText(title = "", channel = "") {
+  const haystack = `${title} ${channel}`.toLowerCase();
+  if (/flight|aviation|pilot|aircraft|airplane|airport|atc|runway|cockpit/.test(haystack)) return "Viagem e Cultura";
+  if (/\b(tech|ai|software|computer|phone|robot|future|innovation)\b/.test(haystack)) return "Tecnologia";
+  if (/business|work|career|startup|founder|company|productivity/.test(haystack)) return "Negócios/Trabalho";
+  if (/movie|film|actor|cinema|series|trailer|scene/.test(haystack)) return "Cinema e Séries";
+  if (/news|debate|politics|world|society|current/.test(haystack)) return "Notícias e Debates";
+  return undefined;
 }
 
 // Utilities for converting timecode to seconds
@@ -169,30 +248,6 @@ const DISCOVERY_DIFFICULTIES = [
   { id: 'advanced', label: 'Avançado - Fala rápida/Nativa' }
 ];
 
-const MOCK_RECOMMENDATIONS = [
-  {
-    id: '0kH8pY1mE1M',
-    title: 'How to Speak English Fluently like an American',
-    channel: 'English with Lucy',
-    difficulty: 'Iniciante',
-    thumbnail: 'https://img.youtube.com/vi/0kH8pY1mE1M/mqdefault.jpg'
-  },
-  {
-    id: 'dQw4w9WgXcQ',
-    title: 'Never Gonna Give You Up (Language Breakdown)',
-    channel: 'Music English',
-    difficulty: 'Intermediário',
-    thumbnail: 'https://img.youtube.com/vi/dQw4w9WgXcQ/mqdefault.jpg'
-  },
-  {
-    id: 'fJ9rUzIMcZQ',
-    title: 'Bohemian Rhapsody Singing Practice',
-    channel: 'Queen English',
-    difficulty: 'Avançado',
-    thumbnail: 'https://img.youtube.com/vi/fJ9rUzIMcZQ/mqdefault.jpg'
-  }
-];
-
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<'discovery' | 'practice'>('discovery');
   const [selectedTheme, setSelectedTheme] = useState<string>('');
@@ -201,20 +256,30 @@ export default function App() {
   const [recommendations, setRecommendations] = useState<any[]>([]);
   const [discoveryUrl, setDiscoveryUrl] = useState('');
   const [studyHistory, setStudyHistory] = useState<StudyHistoryItem[]>([]);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authName, setAuthName] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
 
   const [url, setUrl] = useState("https://www.youtube.com/watch?v=0kH8pY1mE1M");
   const [videoId, setVideoId] = useState("0kH8pY1mE1M");
+  const [currentVideoTitle, setCurrentVideoTitle] = useState("YouTube");
+  const [currentVideoChannel, setCurrentVideoChannel] = useState("YouTube");
   const [activePhraseIndex, setActivePhraseIndex] = useState(0);
   const [isLoopActive, setIsLoopActive] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
   const [playerReady, setPlayerReady] = useState(false);
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
+  const [playerInstanceKey, setPlayerInstanceKey] = useState(0);
+  const [playerCrashed, setPlayerCrashed] = useState(false);
   
   const [phrases, setPhrases] = useState<Phrase[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<LocalUser | null>(null);
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<PronunciationFeedback | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -227,6 +292,8 @@ export default function App() {
   const playerRef = useRef<any>(null);
 
   const activePhrase = phrases[activePhraseIndex] || null;
+  const favoriteChannels = Array.from(new Set(studyHistory.map((item) => item.channel).filter(Boolean))).slice(0, 3);
+  const studiedThemes = Array.from(new Set(studyHistory.map((item) => item.theme).filter(Boolean))).slice(0, 3);
 
   const saveStudyProgress = (item: StudyHistoryItem) => {
     setStudyHistory((current) => {
@@ -234,25 +301,47 @@ export default function App() {
         item,
         ...current.filter((historyItem) => historyItem.videoId !== item.videoId),
       ].slice(0, MAX_STUDY_HISTORY_ITEMS);
-      writeStudyHistory(next);
+      writeStudyHistory(next, user?.id);
       return next;
     });
   };
 
-  const startPractice = (id: string, fullUrl: string, phraseIndex = 0, title?: string) => {
+  const startPractice = async (id: string, fullUrl: string, phraseIndex = 0, title?: string, channel?: string, theme?: string) => {
     pendingPhraseIndexRef.current = phraseIndex;
     setVideoId(id);
     setUrl(fullUrl);
+    setCurrentVideoTitle(title || `YouTube ${id}`);
+    setCurrentVideoChannel(channel || "YouTube");
     setPhrases([]);
     setFeedback(null);
     setRecordingUrl(null);
     setError(null);
+    setPlayerReady(false);
+    setHasStartedPlaying(false);
+    setPlayerCrashed(false);
+    playerRef.current = null;
+    setPlayerInstanceKey((current) => current + 1);
     setActivePhraseIndex(phraseIndex);
+
+    let metadata: VideoMetadata | null = null;
+    try {
+      const response = await fetch(`/api/videoMetadata/${id}`);
+      if (response.ok) {
+        metadata = await response.json();
+        setCurrentVideoTitle(metadata.title);
+        setCurrentVideoChannel(metadata.channel);
+      }
+    } catch (metadataError) {
+      console.warn("Could not fetch video metadata:", metadataError);
+    }
+
     saveStudyProgress({
       videoId: id,
       url: fullUrl,
-      title: title || `YouTube ${id}`,
-      thumbnail: `https://img.youtube.com/vi/${id}/mqdefault.jpg`,
+      title: metadata?.title || title || `YouTube ${id}`,
+      channel: metadata?.channel || channel || "YouTube",
+      theme: theme || inferThemeFromText(metadata?.title || title, metadata?.channel || channel),
+      thumbnail: metadata?.thumbnail || `https://img.youtube.com/vi/${id}/mqdefault.jpg`,
       phraseIndex,
       phraseCount: 0,
       lastStudiedAt: Date.now(),
@@ -263,7 +352,7 @@ export default function App() {
   const removeFromHistory = (id: string) => {
     setStudyHistory((current) => {
       const next = current.filter((item) => item.videoId !== id);
-      writeStudyHistory(next);
+      writeStudyHistory(next, user?.id);
       return next;
     });
   };
@@ -294,6 +383,32 @@ export default function App() {
     }
   };
 
+  const handleFindSimilarVideos = async (item: StudyHistoryItem) => {
+    setIsSearching(true);
+    setRecommendations([]);
+    try {
+      const res = await fetch("/api/recommendSimilarVideos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          videoId: item.videoId,
+          title: item.title,
+          channel: item.channel,
+          theme: item.theme,
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to search similar videos");
+      const data = await res.json();
+      setRecommendations(data);
+      setCurrentScreen('discovery');
+    } catch (err) {
+      console.error("Error searching similar videos:", err);
+      alert("Não consegui buscar vídeos parecidos agora.");
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
   const handleDirectLink = () => {
     const id = extractVideoID(discoveryUrl);
     if (id) {
@@ -304,7 +419,33 @@ export default function App() {
   };
 
   useEffect(() => {
-    setStudyHistory(readStudyHistory());
+    const session = readLocalSession();
+    setUser(session);
+    setStudyHistory(readStudyHistory(session?.id));
+  }, []);
+
+  useEffect(() => {
+    setStudyHistory(readStudyHistory(user?.id));
+  }, [user?.id]);
+
+  useEffect(() => {
+    const handlePlayerWidgetError = (event: ErrorEvent) => {
+      const message = String(event.message || "");
+      const filename = String(event.filename || "");
+      const isYouTubeWidgetNullRef =
+        message.includes("Cannot read properties of null") &&
+        message.includes("src") &&
+        filename.includes("youtube");
+
+      if (isYouTubeWidgetNullRef) {
+        event.preventDefault();
+        setPlayerReady(false);
+        setPlayerCrashed(true);
+      }
+    };
+
+    window.addEventListener("error", handlePlayerWidgetError);
+    return () => window.removeEventListener("error", handlePlayerWidgetError);
   }, []);
 
   useEffect(() => {
@@ -346,6 +487,7 @@ export default function App() {
   const onPlayerReady = (event: any) => {
     playerRef.current = event.target;
     setPlayerReady(true);
+    setPlayerCrashed(false);
     // Start at the active phrase but DO NOT autoplay to avoid browser policy errors
     if (activePhrase) {
       try {
@@ -368,13 +510,16 @@ export default function App() {
     const interval = setInterval(async () => {
       try {
         const player = playerRef.current;
+        const phrase = phrases[activePhraseIndex];
+        if (!phrase) return;
+
         if (player && typeof player.getCurrentTime === 'function') {
           const currentTime = await player.getCurrentTime();
-          const targetEnd = phrases[activePhraseIndex].end;
+          const targetEnd = phrase.end;
           
           if (currentTime >= targetEnd) {
             if (isLoopActive) {
-              player.seekTo(phrases[activePhraseIndex].start, true);
+              player.seekTo(phrase.start, true);
             } else {
               player.pauseVideo();
             }
@@ -391,8 +536,11 @@ export default function App() {
   // Jump strictly to active phrase whenever the phrase changes
   useEffect(() => {
     if (playerReady && playerRef.current && phrases.length > 0) {
+      const phrase = phrases[activePhraseIndex];
+      if (!phrase) return;
+
       const player = playerRef.current;
-      player.seekTo(phrases[activePhraseIndex].start, true);
+      player.seekTo(phrase.start, true);
       if (hasStartedPlaying) {
         player.playVideo();
       }
@@ -414,13 +562,15 @@ export default function App() {
     saveStudyProgress({
       videoId,
       url,
-      title: existing?.title || `YouTube ${videoId}`,
+      title: existing?.title || currentVideoTitle || `YouTube ${videoId}`,
+      channel: existing?.channel || currentVideoChannel,
+      theme: existing?.theme,
       thumbnail: existing?.thumbnail || `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
       phraseIndex: activePhraseIndex,
       phraseCount: phrases.length,
       lastStudiedAt: Date.now(),
     });
-  }, [currentScreen, videoId, url, activePhraseIndex, phrases.length]);
+  }, [currentScreen, videoId, url, activePhraseIndex, phrases.length, currentVideoTitle, currentVideoChannel, user?.id]);
 
   const handlePrev = () => {
     if (phrases.length === 0) return;
@@ -430,24 +580,64 @@ export default function App() {
     setActivePhraseIndex((prev) => (prev > 0 ? prev - 1 : prev));
   };
 
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (usr) => {
-      setUser(usr);
-    });
-    return () => unsub();
-  }, []);
-
-  const handleLogin = async () => {
-    const provider = new GoogleAuthProvider();
-    try {
-      await signInWithPopup(auth, provider);
-    } catch (err) {
-      console.error(err);
-    }
+  const openAuth = (mode: 'login' | 'signup' = 'login') => {
+    setAuthMode(mode);
+    setAuthError(null);
+    setAuthOpen(true);
   };
 
-  const handleLogout = async () => {
-    await signOut(auth);
+  const handleAuthSubmit = (event: any) => {
+    event.preventDefault();
+    const email = authEmail.trim().toLowerCase();
+    const password = authPassword.trim();
+    const name = authName.trim() || email.split('@')[0] || 'Aluno';
+
+    if (!email || !password) {
+      setAuthError('Digite e-mail e senha.');
+      return;
+    }
+
+    const users = readLocalUsers();
+    const existing = users.find((candidate) => candidate.email === email);
+
+    if (authMode === 'signup') {
+      if (existing) {
+        setAuthError('Já existe uma conta com este e-mail.');
+        return;
+      }
+
+      const nextUser: StoredLocalUser = {
+        id: `user-${Date.now()}`,
+        name,
+        email,
+        password,
+      };
+      writeLocalUsers([...users, nextUser]);
+      const sessionUser = { id: nextUser.id, name: nextUser.name, email: nextUser.email };
+      writeLocalSession(sessionUser);
+      setUser(sessionUser);
+      setStudyHistory(mergeGuestHistoryIntoUser(sessionUser.id));
+      setAuthOpen(false);
+      setAuthPassword('');
+      return;
+    }
+
+    if (!existing || existing.password !== password) {
+      setAuthError('E-mail ou senha não conferem.');
+      return;
+    }
+
+    const sessionUser = { id: existing.id, name: existing.name, email: existing.email };
+    writeLocalSession(sessionUser);
+    setUser(sessionUser);
+    setStudyHistory(mergeGuestHistoryIntoUser(sessionUser.id));
+    setAuthOpen(false);
+    setAuthPassword('');
+  };
+
+  const handleLogout = () => {
+    writeLocalSession(null);
+    setUser(null);
   };
 
   const analyzePronunciationFeedback = async (audioUrl: string, phraseText: string) => {
@@ -471,8 +661,8 @@ export default function App() {
 
   const toggleRecording = async () => {
     if (!user) {
-      alert("Por favor, faça login para gravar");
-      return handleLogin();
+      openAuth('login');
+      return;
     }
 
     if (isRecording) {
@@ -505,28 +695,11 @@ export default function App() {
           }
         };
 
-        recorder.onstop = async () => {
-          const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+        recorder.onstop = () => {
           const audioBlob = new Blob(audioChunksRef.current, { type: mimeType || 'audio/webm' });
-          // Stop all tracks
           stream.getTracks().forEach(track => track.stop());
-          
-          // Upload to Firebase Storage
-          try {
-            const fileName = `user_recordings/${user.uid}/${videoId}/${activePhraseIndex}.${ext}`;
-            const fileRef = ref(storage, fileName);
-            await uploadBytes(fileRef, audioBlob);
-            const downloadUrl = await getDownloadURL(fileRef);
-            setRecordingUrl(downloadUrl);
-            console.log("Audio uploaded to:", downloadUrl);
-            
-            if (activePhrase) {
-              analyzePronunciationFeedback(downloadUrl, activePhrase.text);
-            }
-          } catch(err) {
-            console.error("Error uploading audio:", err);
-            alert("Erro ao fazer upload do aúdio.");
-          }
+          const localAudioUrl = URL.createObjectURL(audioBlob);
+          setRecordingUrl(localAudioUrl);
         };
 
         mediaRecorderRef.current = recorder;
@@ -556,6 +729,89 @@ export default function App() {
     }
   };
 
+  const authModal = authOpen ? (
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center px-4">
+      <form onSubmit={handleAuthSubmit} className="w-full max-w-md glass-input rounded-3xl p-6 md:p-8 shadow-2xl">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h2 className="text-2xl font-semibold text-white">
+              {authMode === 'login' ? 'Entrar' : 'Criar conta'}
+            </h2>
+            <p className="text-sm text-gray-400 mt-1">
+              Login local simples para salvar seu progresso neste computador.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAuthOpen(false)}
+            className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-gray-300"
+          >
+            ×
+          </button>
+        </div>
+
+        {authMode === 'signup' && (
+          <label className="block mb-4">
+            <span className="text-xs text-gray-400 uppercase tracking-wider">Nome</span>
+            <input
+              value={authName}
+              onChange={(event) => setAuthName(event.target.value)}
+              className="mt-2 w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-1 focus:ring-blue-500/60"
+              placeholder="Eduardo"
+            />
+          </label>
+        )}
+
+        <label className="block mb-4">
+          <span className="text-xs text-gray-400 uppercase tracking-wider">E-mail</span>
+          <input
+            type="email"
+            value={authEmail}
+            onChange={(event) => setAuthEmail(event.target.value)}
+            className="mt-2 w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-1 focus:ring-blue-500/60"
+            placeholder="voce@email.com"
+          />
+        </label>
+
+        <label className="block mb-4">
+          <span className="text-xs text-gray-400 uppercase tracking-wider">Senha</span>
+          <input
+            type="password"
+            value={authPassword}
+            onChange={(event) => setAuthPassword(event.target.value)}
+            className="mt-2 w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-1 focus:ring-blue-500/60"
+            placeholder="Sua senha"
+          />
+        </label>
+
+        {authError && (
+          <div className="mb-4 rounded-xl border border-red-500/30 bg-red-950/30 px-4 py-3 text-sm text-red-200">
+            {authError}
+          </div>
+        )}
+
+        <button
+          type="submit"
+          className="w-full py-3.5 rounded-xl bg-white text-black font-bold hover:bg-gray-100 transition-colors flex items-center justify-center gap-2"
+        >
+          {authMode === 'login' ? <LogIn size={18} /> : <UserPlus size={18} />}
+          {authMode === 'login' ? 'Entrar' : 'Criar conta'}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setAuthMode(authMode === 'login' ? 'signup' : 'login');
+            setAuthError(null);
+          }}
+          className="w-full mt-4 text-sm text-blue-300 hover:text-blue-200"
+        >
+          {authMode === 'login' ? 'Ainda não tenho conta — criar agora' : 'Já tenho conta — entrar'}
+        </button>
+      </form>
+    </div>
+  ) : null;
+
   if (currentScreen === 'discovery') {
     return (
       <div className="bg-atmosphere flex flex-col min-h-screen text-white w-full selection:bg-blue-500/30">
@@ -567,10 +823,10 @@ export default function App() {
           </div>
           {user ? (
             <button onClick={handleLogout} className="glass-input px-5 py-2.5 rounded-full flex items-center text-gray-300 hover:text-white transition-colors text-sm font-medium">
-              <LogOut size={16} className="mr-2 opacity-70"/> {user.email}
+              <LogOut size={16} className="mr-2 opacity-70"/> {user.name}
             </button>
           ) : (
-            <button onClick={handleLogin} className="px-6 py-2.5 rounded-full flex items-center bg-white/10 hover:bg-white/20 border border-white/10 text-white transition-colors text-sm font-medium">
+            <button onClick={() => openAuth('login')} className="px-6 py-2.5 rounded-full flex items-center bg-white/10 hover:bg-white/20 border border-white/10 text-white transition-colors text-sm font-medium">
               <LogIn size={16} className="mr-2 opacity-70"/> Entrar
             </button>
           )}
@@ -610,7 +866,7 @@ export default function App() {
                       className="min-w-[260px] md:min-w-[300px] snap-start bg-black/35 border border-white/10 rounded-2xl overflow-hidden group hover:border-blue-400/30 transition-colors"
                     >
                       <button
-                        onClick={() => startPractice(item.videoId, item.url, item.phraseIndex, item.title)}
+                        onClick={() => startPractice(item.videoId, item.url, item.phraseIndex, item.title, item.channel, item.theme)}
                         className="w-full text-left"
                       >
                         <div className="flex gap-3 p-3">
@@ -619,6 +875,9 @@ export default function App() {
                           </div>
                           <div className="min-w-0 flex-1">
                             <h3 className="text-sm font-medium text-gray-100 line-clamp-2 leading-snug">{item.title}</h3>
+                            {item.channel && (
+                              <p className="text-xs text-blue-300/80 mt-1 truncate">{item.channel}</p>
+                            )}
                             <p className="text-xs text-gray-500 mt-1">
                               Frase {item.phraseCount > 0 ? item.phraseIndex + 1 : 1}{item.phraseCount > 0 ? ` de ${item.phraseCount}` : ''}
                             </p>
@@ -631,18 +890,37 @@ export default function App() {
                       </button>
                       <div className="px-3 py-2 border-t border-white/5 flex justify-between items-center">
                         <span className="text-[11px] text-gray-500 uppercase tracking-wider">{progress}% concluído</span>
-                        <button
-                          onClick={() => removeFromHistory(item.videoId)}
-                          className="p-1.5 rounded-lg text-gray-500 hover:text-red-300 hover:bg-red-500/10 transition-colors"
-                          title="Remover do histórico"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => handleFindSimilarVideos(item)}
+                            className="px-2 py-1 rounded-lg text-[11px] text-blue-200 hover:bg-blue-500/10 transition-colors"
+                            title="Buscar vídeos parecidos"
+                          >
+                            Mais assim
+                          </button>
+                          <button
+                            onClick={() => removeFromHistory(item.videoId)}
+                            className="p-1.5 rounded-lg text-gray-500 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                            title="Remover do histórico"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
                 })}
               </div>
+            </section>
+          )}
+
+          {(favoriteChannels.length > 0 || studiedThemes.length > 0) && (
+            <section className="w-full mb-8 glass-input rounded-2xl p-4 md:p-5">
+              <h2 className="text-sm font-semibold text-gray-100 mb-2">Seu perfil de estudo</h2>
+              <p className="text-xs md:text-sm text-gray-400">
+                Você vem estudando {favoriteChannels.length > 0 ? `canais como ${favoriteChannels.join(', ')}` : 'vídeos em inglês'}
+                {studiedThemes.length > 0 ? ` e temas como ${studiedThemes.join(', ')}` : ''}. Use “Mais assim” para puxar sugestões parecidas.
+              </p>
             </section>
           )}
 
@@ -728,7 +1006,7 @@ export default function App() {
                       {recommendations.map(video => (
                         <div 
                           key={video.id} 
-                          onClick={() => startPractice(video.id, `https://youtube.com/watch?v=${video.id}`, 0, video.title)}
+                          onClick={() => startPractice(video.id, `https://youtube.com/watch?v=${video.id}`, 0, video.title, video.channel, selectedTheme)}
                           className="min-w-[240px] md:min-w-0 snap-center shrink-0 group bg-black/40 border border-white/10 rounded-2xl overflow-hidden cursor-pointer transition-all duration-500 hover:-translate-y-2 hover:shadow-2xl hover:shadow-blue-500/20 hover:border-white/20"
                         >
                           <div className="aspect-video relative overflow-hidden bg-gray-900">
@@ -803,6 +1081,7 @@ export default function App() {
 
           </div>
         </main>
+        {authModal}
       </div>
     );
   }
@@ -826,11 +1105,11 @@ export default function App() {
             title={`Sair (${user.email})`}
           >
             <LogOut size={18} className="md:w-5 md:h-5 md:mr-2" />
-            <span className="hidden md:inline">Sair</span>
+            <span className="hidden md:inline">{user.name}</span>
           </button>
         ) : (
           <button 
-            onClick={handleLogin}
+            onClick={() => openAuth('login')}
             className="glass-input p-2 md:px-4 md:py-2.5 rounded-full flex items-center justify-center text-blue-400 hover:text-blue-300 hover:bg-white/10 transition-colors whitespace-nowrap shrink-0 text-sm"
             title="Fazer Login"
           >
@@ -843,25 +1122,43 @@ export default function App() {
         
         {/* YOUTUBE PLAYER CONTAINER */}
         <div className="w-full max-w-3xl aspect-video rounded-2xl overflow-hidden glass-input shadow-2xl relative ring-1 ring-white/10 group">
-          <YouTube 
-            videoId={videoId} 
-            opts={{
-              height: '100%',
-              width: '100%',
-              playerVars: {
-                autoplay: 0,
-                controls: 1, // show yt controls to ensure playability
-                disablekb: 0,
-                modestbranding: 1,
-                rel: 0,
-                origin: typeof window !== 'undefined' ? window.location.origin : undefined,
-              },
-            }}
-            onReady={onPlayerReady}
-            onError={onPlayerError}
-            onPlay={() => setHasStartedPlaying(true)}
-            className="absolute inset-0 w-full h-full"
-          />
+          {playerCrashed ? (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 p-6 text-center">
+              <p className="text-sm md:text-base text-gray-200 mb-4">
+                O player do YouTube travou ao carregar este vídeo.
+              </p>
+              <button
+                onClick={() => {
+                  setPlayerCrashed(false);
+                  setPlayerInstanceKey((current) => current + 1);
+                }}
+                className="px-5 py-3 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm font-medium transition-colors"
+              >
+                Recarregar player
+              </button>
+            </div>
+          ) : (
+            <YouTube
+              key={`${videoId}-${playerInstanceKey}`}
+              videoId={videoId}
+              opts={{
+                height: '100%',
+                width: '100%',
+                playerVars: {
+                  autoplay: 0,
+                  controls: 1, // show yt controls to ensure playability
+                  disablekb: 0,
+                  modestbranding: 1,
+                  rel: 0,
+                  origin: typeof window !== 'undefined' ? window.location.origin : undefined,
+                },
+              }}
+              onReady={onPlayerReady}
+              onError={onPlayerError}
+              onPlay={() => setHasStartedPlaying(true)}
+              className="absolute inset-0 w-full h-full"
+            />
+          )}
           {!hasStartedPlaying && phrases.length > 0 && (
             <div className="absolute inset-0 bg-black/40 flex items-center justify-center transition-opacity hover:bg-black/50 pointer-events-none">
               <div className="w-16 h-16 rounded-full bg-red-600 flex items-center justify-center text-white shadow-lg">
@@ -1117,6 +1414,7 @@ export default function App() {
           <Play size={20} className="md:w-6 md:h-6" />
         </button>
       </footer>
+      {authModal}
     </div>
   );
 }
