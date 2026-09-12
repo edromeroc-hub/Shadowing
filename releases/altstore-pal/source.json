@@ -1,0 +1,49 @@
+{
+  "name": "Eduardo Romero Apps",
+  "subtitle": "Aplicativos independentes para iPhone e iPad",
+  "description": "Source oficial de aplicativos desenvolvidos por Eduardo Romero e distribuídos pela AltStore PAL.",
+  "website": "https://github.com/edromeroc-hub/Shadowing",
+  "iconURL": "https://raw.githubusercontent.com/edromeroc-hub/Shadowing/main/releases/altstore/icon.png",
+  "tintColor": "#5B8CFF",
+  "nsfw": false,
+  "featuredApps": [
+    "com.edromero.shadowing"
+  ],
+  "apps": [
+    {
+      "name": "ShadowingAI",
+      "bundleIdentifier": "com.edromero.shadowing",
+      "marketplaceID": "6811431781",
+      "developerName": "Eduardo Romero",
+      "subtitle": "Ouça, repita e pratique inglês",
+      "localizedDescription": "Treine inglês com vídeos autênticos, legendas, tradução, repetição inteligente por frases, exercícios de escuta e histórico de estudos. O processamento de IA usa uma chave Google Gemini fornecida pelo próprio usuário e armazenada no dispositivo.",
+      "iconURL": "https://raw.githubusercontent.com/edromeroc-hub/Shadowing/main/releases/altstore/icon.png",
+      "tintColor": "#5B8CFF",
+      "category": "utilities",
+      "screenshots": {
+        "iphone": [
+          {
+            "imageURL": "https://raw.githubusercontent.com/edromeroc-hub/Shadowing/main/releases/altstore/screenshots/iphone-discovery.png",
+            "width": 1242,
+            "height": 2688
+          }
+        ],
+        "ipad": [
+          {
+            "imageURL": "https://raw.githubusercontent.com/edromeroc-hub/Shadowing/main/releases/altstore/screenshots/ipad-discovery.png",
+            "width": 2064,
+            "height": 2752
+          }
+        ]
+      },
+      "versions": [],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {
+          "NSMicrophoneUsageDescription": "O ShadowingAI usa o microfone para gravar sua pronúncia e comparar seu treino de inglês."
+        }
+      }
+    }
+  ],
+  "news": []
+}
