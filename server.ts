@@ -4,13 +4,127 @@ import { YoutubeTranscript } from "youtube-transcript";
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { ProxyAgent } from "undici";
 import dotenv from "dotenv";
+import { readdir, readFile, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { createYoutubeEngine } from "./offline-lab/youtube-engine.mjs";
 
-dotenv.config();
+dotenv.config({ path: process.env.SHADOWING_ENV_FILE || undefined });
 
-const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
-const ai = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
+const geminiModel = process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
+const geminiSegmentationEnabled = process.env.GEMINI_SEGMENTATION_ENABLED?.trim().toLowerCase() !== "false";
+const runtimeSettingsPath = process.env.SHADOWING_SETTINGS_FILE?.trim();
+let geminiApiKey = process.env.GEMINI_API_KEY?.trim() || "";
+
+if (runtimeSettingsPath) {
+  try {
+    const savedSettings = JSON.parse(readFileSync(runtimeSettingsPath, "utf8"));
+    geminiApiKey = String(savedSettings.geminiApiKey || geminiApiKey).trim();
+  } catch {
+  }
+}
+
+let ai: GoogleGenAI | null = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
 const youtubeProxyUrl = process.env.YOUTUBE_PROXY_URL;
 const youtubeProxyAgent = youtubeProxyUrl ? new ProxyAgent(youtubeProxyUrl) : null;
+const appRootDir = process.env.SHADOWING_APP_ROOT || process.cwd();
+const offlineLibraryDir = process.env.SHADOWING_DATA_DIR || path.join(appRootDir, "offline-lab", "library");
+
+type OfflineDownloadJob = {
+  videoId: string;
+  status: "downloading" | "ready" | "error";
+  stage?: string;
+  message?: string;
+  progress?: number | null;
+  error?: string;
+  metadata?: Record<string, unknown>;
+};
+
+const offlineDownloadJobs = new Map<string, OfflineDownloadJob>();
+let offlineEnginePromise: ReturnType<typeof createYoutubeEngine> | null = null;
+
+function getOfflineEngine() {
+  offlineEnginePromise ||= createYoutubeEngine({
+    cacheDirectory: path.join(offlineLibraryDir, ".youtube-cache"),
+  });
+  return offlineEnginePromise;
+}
+
+function isValidVideoId(videoId: string) {
+  return /^[\w-]{11}$/.test(videoId);
+}
+
+async function readOfflineVideoMetadata(videoId: string) {
+  if (!isValidVideoId(videoId)) return null;
+
+  try {
+    return JSON.parse(await readFile(path.join(offlineLibraryDir, videoId, "metadata.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function listOfflineVideos() {
+  try {
+    const entries = await readdir(offlineLibraryDir, { withFileTypes: true });
+    const metadata = await Promise.all(
+      entries
+        .filter((entry) => entry.isDirectory() && isValidVideoId(entry.name))
+        .map((entry) => readOfflineVideoMetadata(entry.name))
+    );
+    return metadata.filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function ensureOfflineLesson(videoId: string) {
+  const lessonPath = path.join(offlineLibraryDir, videoId, "lesson.ai.v4.json");
+  try {
+    return JSON.parse(await readFile(lessonPath, "utf8"));
+  } catch {
+    const rawCaptions = JSON.parse(
+      await readFile(path.join(offlineLibraryDir, videoId, "captions.raw.json"), "utf8")
+    );
+    const transcriptSegments = normalizeTranscriptSegments(
+      rawCaptions.map((item: { text: string; offset: number; duration: number }) => ({
+        text: item.text,
+        start: Number(item.offset || 0) / 1000,
+        end: (Number(item.offset || 0) + Math.max(Number(item.duration || 0), 250)) / 1000,
+      }))
+    );
+
+    try {
+      const previousLesson = JSON.parse(
+        await readFile(path.join(offlineLibraryDir, videoId, "lesson.ai.v3.json"), "utf8")
+      );
+      const realignedLesson = realignShadowingLessonTimings(previousLesson, transcriptSegments);
+      await writeFile(lessonPath, JSON.stringify(realignedLesson, null, 2));
+      return realignedLesson;
+    } catch {
+    }
+
+    let lesson;
+
+    try {
+      console.log(`[offline-lesson] AI segmentation started (${videoId})`, { segments: transcriptSegments.length });
+      lesson = await buildAiShadowingTranscript(transcriptSegments);
+      console.log(`[offline-lesson] AI segmentation completed (${videoId})`, { phrases: lesson.length });
+    } catch (error: any) {
+      console.warn(`Offline lesson AI segmentation failed (${videoId}):`, error.message);
+      const groupedPhrases = groupSegmentsForShadowing(transcriptSegments);
+      try {
+        lesson = await enrichTranscript(groupedPhrases);
+      } catch (enrichmentError: any) {
+        console.warn(`Offline lesson enrichment failed (${videoId}):`, enrichmentError.message);
+        lesson = toBasicPhrases(groupedPhrases);
+      }
+    }
+
+    const stabilizedLesson = stabilizeShadowingLessonTimings(lesson);
+    await writeFile(lessonPath, JSON.stringify(stabilizedLesson, null, 2));
+    return stabilizedLesson;
+  }
+}
 
 type TranscriptSegment = {
   text: string;
@@ -40,6 +154,9 @@ const SHADOWING_TRAILING_SECONDS = 0.32;
 const SHADOWING_MAX_SECONDS = 8;
 const SHADOWING_MAX_CHARS = 160;
 const SHADOWING_MIN_SECONDS = 0.55;
+const SHADOWING_MIN_IDEAL_SECONDS = 1.4;
+const SHADOWING_MIN_WORDS = 4;
+const SHADOWING_MAX_AI_PHRASES = 60;
 
 const ENRICHED_TRANSCRIPT_SCHEMA: Schema = {
   type: Type.ARRAY,
@@ -48,12 +165,26 @@ const ENRICHED_TRANSCRIPT_SCHEMA: Schema = {
     type: Type.OBJECT,
     properties: {
       text: { type: Type.STRING, description: "The original English text" },
-      phonetic: { type: Type.STRING, description: "Phonetic transcription (IPA)" },
       translation: { type: Type.STRING, description: "Portuguese (PT-BR) translation" },
       start: { type: Type.NUMBER, description: "Start time in seconds" },
       end: { type: Type.NUMBER, description: "End time in seconds" },
     },
-    required: ["text", "phonetic", "translation", "start", "end"],
+    required: ["text", "translation", "start", "end"],
+  },
+};
+
+const AI_SHADOWING_SEGMENTS_SCHEMA: Schema = {
+  type: Type.ARRAY,
+  description: "Best shadowing practice clips selected from the full YouTube transcript",
+  items: {
+    type: Type.OBJECT,
+    properties: {
+      text: { type: Type.STRING, description: "Natural English phrase for shadowing" },
+      translation: { type: Type.STRING, description: "Portuguese (PT-BR) translation" },
+      start: { type: Type.NUMBER, description: "Clip start time in seconds" },
+      end: { type: Type.NUMBER, description: "Clip end time in seconds" },
+    },
+    required: ["text", "translation", "start", "end"],
   },
 };
 
@@ -152,6 +283,26 @@ function endsAtNaturalPause(text: string) {
   return /[,.;:!?]["')\]]?$/.test(text.trim());
 }
 
+function countSpokenWords(text: string) {
+  return text
+    .replace(/[^\w\s'-]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .length;
+}
+
+function isTooShortForShadowing(phrase: TranscriptSegment) {
+  const text = phrase.text.trim().toLowerCase();
+  const duration = phrase.end - phrase.start;
+  const fillerOnly = /^(ok(?:ay)?|yeah|yes|no|right|well|so|uh|um|hmm|all right)[,.!? ]*$/i.test(text);
+
+  return (
+    fillerOnly ||
+    countSpokenWords(text) < SHADOWING_MIN_WORDS ||
+    duration < SHADOWING_MIN_IDEAL_SECONDS
+  );
+}
+
 function applyShadowingBuffer(phrases: TranscriptSegment[]) {
   return phrases.map((phrase, index) => {
     const previous = phrases[index - 1];
@@ -182,11 +333,12 @@ function groupSegmentsForShadowing(segments: TranscriptSegment[]) {
     const gap = segment.start - current.end;
     const combinedText = `${current.text} ${segment.text}`.trim();
     const combinedDuration = segment.end - current.start;
+    const currentTooShort = isTooShortForShadowing(current);
     const shouldMerge =
-      gap <= 1.1 &&
+      gap <= (currentTooShort ? 1.8 : 1.1) &&
       combinedDuration <= SHADOWING_MAX_SECONDS &&
       combinedText.length <= SHADOWING_MAX_CHARS &&
-      !endsAtNaturalPause(current.text);
+      (currentTooShort || !endsAtNaturalPause(current.text));
 
     if (shouldMerge) {
       current = {
@@ -204,9 +356,37 @@ function groupSegmentsForShadowing(segments: TranscriptSegment[]) {
     phrases.push(current);
   }
 
-  return applyShadowingBuffer(phrases)
+  const repairedPhrases = mergeShortShadowingPhrases(phrases);
+
+  return applyShadowingBuffer(repairedPhrases)
     .filter((phrase) => phrase.end - phrase.start >= SHADOWING_MIN_SECONDS)
     .slice(0, 60);
+}
+
+function mergeShortShadowingPhrases(phrases: TranscriptSegment[]) {
+  const repaired: TranscriptSegment[] = [];
+
+  for (const phrase of phrases) {
+    const previous = repaired[repaired.length - 1];
+    const canMergePrevious =
+      previous &&
+      phrase.end - previous.start <= SHADOWING_MAX_SECONDS &&
+      `${previous.text} ${phrase.text}`.length <= SHADOWING_MAX_CHARS &&
+      phrase.start - previous.end <= 1.8;
+
+    if (canMergePrevious && (isTooShortForShadowing(previous) || isTooShortForShadowing(phrase))) {
+      repaired[repaired.length - 1] = {
+        text: `${previous.text} ${phrase.text}`.replace(/\s+/g, " ").trim(),
+        start: previous.start,
+        end: phrase.end,
+      };
+      continue;
+    }
+
+    repaired.push({ ...phrase });
+  }
+
+  return repaired.filter((phrase) => !isTooShortForShadowing(phrase) || phrase.end - phrase.start >= SHADOWING_MIN_IDEAL_SECONDS);
 }
 
 function isUsableGeminiKey() {
@@ -215,10 +395,14 @@ function isUsableGeminiKey() {
   return !["dummy", "my_gemini_api_key", "your_gemini_api_key"].includes(lowerKey);
 }
 
+function configureGeminiApiKey(apiKey: string) {
+  geminiApiKey = apiKey.trim();
+  ai = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
+}
+
 function toBasicPhrases(transcriptData: TranscriptSegment[]) {
   return transcriptData.map((phrase) => ({
     ...phrase,
-    phonetic: "",
     translation: "",
   }));
 }
@@ -480,14 +664,14 @@ async function enrichTranscript(transcriptData: TranscriptSegment[]) {
   }
 
   const prompt = `You are an expert language teacher. I will provide you with a JSON array representing the transcript of an English YouTube video.
-For each item in the array, translate the 'text' into Portuguese (PT-BR) and provide its phonetic transcription using the International Phonetic Alphabet (IPA).
-Return the exact same structure but include 'phonetic' and 'translation' fields. Do not alter the start and end values.
+For each item in the array, translate the 'text' into Portuguese (PT-BR).
+Return the exact same structure but include a 'translation' field. Do not alter the start and end values.
 Keep the original English text exactly as provided.
 Here is the transcript data:
 ${JSON.stringify(transcriptData, null, 2)}`;
 
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: geminiModel,
     contents: prompt,
     config: {
       responseMimeType: "application/json",
@@ -502,6 +686,255 @@ ${JSON.stringify(transcriptData, null, 2)}`;
   }
 
   return JSON.parse(responseText);
+}
+
+type TimedTranscriptWord = {
+  token: string;
+  start: number;
+  end: number;
+};
+
+function tokenizeForTiming(text: string) {
+  return (text.toLowerCase().match(/[a-z0-9]+(?:['’][a-z0-9]+)*/g) || [])
+    .map((token) => token.replaceAll("’", "'"));
+}
+
+function buildTranscriptWordTimeline(transcriptSegments: TranscriptSegment[]) {
+  return makeSequentialSegments(normalizeTranscriptSegments(transcriptSegments)).flatMap((segment) => {
+    const tokens = tokenizeForTiming(segment.text);
+    if (tokens.length === 0) return [];
+
+    const duration = Math.max(0.25, segment.end - segment.start);
+    return tokens.map<TimedTranscriptWord>((token, index) => ({
+      token,
+      start: segment.start + duration * (index / tokens.length),
+      end: segment.start + duration * ((index + 1) / tokens.length),
+    }));
+  });
+}
+
+function findAlignedPhraseTiming(text: string, approximateStart: number, timeline: TimedTranscriptWord[]) {
+  const phraseTokens = tokenizeForTiming(text);
+  if (phraseTokens.length === 0 || phraseTokens.length > timeline.length) return null;
+
+  const candidates: { start: number; end: number }[] = [];
+  const lastStartIndex = timeline.length - phraseTokens.length;
+
+  for (let startIndex = 0; startIndex <= lastStartIndex; startIndex += 1) {
+    let matches = true;
+    for (let tokenIndex = 0; tokenIndex < phraseTokens.length; tokenIndex += 1) {
+      if (timeline[startIndex + tokenIndex].token !== phraseTokens[tokenIndex]) {
+        matches = false;
+        break;
+      }
+    }
+
+    if (matches) {
+      candidates.push({
+        start: timeline[startIndex].start,
+        end: timeline[startIndex + phraseTokens.length - 1].end,
+      });
+    }
+  }
+
+  if (candidates.length === 0) return null;
+  return candidates.reduce((closest, candidate) =>
+    Math.abs(candidate.start - approximateStart) < Math.abs(closest.start - approximateStart)
+      ? candidate
+      : closest
+  );
+}
+
+function realignShadowingLessonTimings(phrases: any[], transcriptSegments: TranscriptSegment[]) {
+  const normalizedTranscript = normalizeTranscriptSegments(transcriptSegments);
+  const transcriptStart = normalizedTranscript[0]?.start ?? 0;
+  const transcriptEnd = normalizedTranscript[normalizedTranscript.length - 1]?.end ?? Number.MAX_SAFE_INTEGER;
+  const timeline = buildTranscriptWordTimeline(normalizedTranscript);
+
+  const alignedPhrases = phrases.map((phrase) => {
+    const approximateStart = Number(phrase.start);
+    const aligned = findAlignedPhraseTiming(String(phrase.text || ""), approximateStart, timeline);
+    if (!aligned) return { ...phrase };
+
+    return {
+      ...phrase,
+      start: Number(Math.max(transcriptStart, aligned.start - SHADOWING_LEAD_IN_SECONDS).toFixed(3)),
+      end: Number(Math.min(transcriptEnd, aligned.end + SHADOWING_TRAILING_SECONDS).toFixed(3)),
+    };
+  });
+
+  return stabilizeShadowingLessonTimings(alignedPhrases);
+}
+
+function normalizeAiShadowingPhrases(phrases: any[], transcriptSegments: TranscriptSegment[]) {
+  const normalizedTranscript = normalizeTranscriptSegments(transcriptSegments);
+  const transcriptStart = normalizedTranscript[0]?.start ?? 0;
+  const transcriptEnd = normalizedTranscript[normalizedTranscript.length - 1]?.end ?? Number.MAX_SAFE_INTEGER;
+
+  const normalizedPhrases = phrases
+    .map((phrase) => {
+      const start = Number(phrase.start);
+      const end = Number(phrase.end);
+      const text = cleanTranscriptText(String(phrase.text || ""));
+
+      return {
+        text,
+        translation: String(phrase.translation || ""),
+        start: Number(Math.max(transcriptStart, start - SHADOWING_LEAD_IN_SECONDS).toFixed(3)),
+        end: Number(Math.min(transcriptEnd, end + SHADOWING_TRAILING_SECONDS).toFixed(3)),
+      };
+    })
+    .filter((phrase) =>
+      phrase.text &&
+      Number.isFinite(phrase.start) &&
+      Number.isFinite(phrase.end) &&
+      phrase.end > phrase.start &&
+      phrase.end - phrase.start <= SHADOWING_MAX_SECONDS + SHADOWING_LEAD_IN_SECONDS + SHADOWING_TRAILING_SECONDS &&
+      countSpokenWords(phrase.text) >= SHADOWING_MIN_WORDS
+    )
+    .sort((a, b) => a.start - b.start)
+    .slice(0, SHADOWING_MAX_AI_PHRASES);
+
+  return realignShadowingLessonTimings(normalizedPhrases, normalizedTranscript);
+}
+
+function stabilizeShadowingLessonTimings(phrases: any[]) {
+  const stabilized = phrases
+    .map((phrase) => ({ ...phrase }))
+    .sort((left, right) => Number(left.start) - Number(right.start));
+
+  for (let index = 1; index < stabilized.length; index += 1) {
+    const previous = stabilized[index - 1];
+    const current = stabilized[index];
+    if (Number(current.start) >= Number(previous.end)) continue;
+
+    const boundary = Number(((Number(current.start) + Number(previous.end)) / 2).toFixed(3));
+    previous.end = Number(Math.max(Number(previous.start) + SHADOWING_MIN_SECONDS, boundary).toFixed(3));
+    current.start = Number(Math.min(Number(current.end) - SHADOWING_MIN_SECONDS, boundary).toFixed(3));
+  }
+
+  return stabilized;
+}
+
+async function buildAiShadowingTranscript(transcriptSegments: TranscriptSegment[]) {
+  if (!ai || !isUsableGeminiKey()) {
+    throw new Error("Gemini API key is not configured.");
+  }
+
+  const fullTranscript = makeSequentialSegments(normalizeTranscriptSegments(transcriptSegments));
+  const prompt = `You are an expert English shadowing lesson editor. Segment this YouTube auto-caption transcript into a coherent sequence of practice clips.
+
+Goal:
+- Start from the earliest useful spoken sentence and keep clips chronological and consecutive.
+- Cover the spoken passage continuously. Do not cherry-pick disconnected quotes or skip useful words between clips.
+- Combine adjacent auto-caption rows whenever a row is only a sentence fragment.
+- Each clip must express a complete thought, complete sentence, or independently meaningful clause.
+- Never create a clip from isolated leftovers such as "my cable everything", fillers, or one/two/three-word fragments.
+- Never end a clip after a determiner, possessive, conjunction, preposition, auxiliary verb, or other word that clearly continues into the next caption.
+- Prefer 5 to 14 spoken words and 2.5 to 7 seconds.
+- Maximum clip length: ${SHADOWING_MAX_SECONDS} seconds.
+- Return at most ${SHADOWING_MAX_AI_PHRASES} clips in chronological order.
+- If a complete thought is slightly longer, split only at a natural grammatical pause.
+
+Timing rules:
+- Use only timings from the provided transcript.
+- You may combine adjacent caption rows into one clip.
+- start should be the first included caption start.
+- end should be the last included caption end.
+- Do not invent timestamps outside the transcript.
+- Do not overlap clips.
+
+Language teacher fields:
+- text: exact contiguous English words from the transcript, with only light punctuation added.
+- translation: Portuguese (PT-BR) translation.
+
+Full transcript JSON:
+${JSON.stringify(fullTranscript)}`;
+
+  const response = await ai.models.generateContent({
+    model: geminiModel,
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: AI_SHADOWING_SEGMENTS_SCHEMA,
+      temperature: 0.15,
+    },
+  });
+
+  const responseText = response.text;
+  if (!responseText) {
+    throw new Error("Empty response from Gemini.");
+  }
+
+  const parsed = JSON.parse(responseText);
+  if (!Array.isArray(parsed)) {
+    throw new Error("Gemini did not return a phrase array.");
+  }
+
+  const normalized = normalizeAiShadowingPhrases(parsed, fullTranscript);
+  if (normalized.length === 0) {
+    throw new Error("Gemini returned no usable shadowing clips.");
+  }
+
+  return normalized;
+}
+
+async function buildAiShadowingWindow(transcriptSegments: TranscriptSegment[], start: number, end: number, maxPhrases = 5) {
+  if (!ai || !isUsableGeminiKey()) {
+    throw new Error("Gemini API key is not configured.");
+  }
+
+  const windowSegments = makeSequentialSegments(normalizeTranscriptSegments(transcriptSegments))
+    .filter((segment) => segment.end >= start && segment.start <= end)
+    .slice(0, 80);
+
+  if (windowSegments.length === 0) {
+    throw new Error("No transcript segments in requested window.");
+  }
+
+  const prompt = `You are refining a small section of a YouTube auto-caption transcript for English shadowing.
+
+Select up to ${maxPhrases} natural shadowing clips from this short transcript window.
+
+Rules:
+- Do NOT make clips that are only "ok", "yeah", "right", "um", or one/two words.
+- Prefer complete spoken thoughts or meaningful clauses.
+- Ideal clip length: 2 to 7 seconds.
+- Maximum clip length: ${SHADOWING_MAX_SECONDS} seconds.
+- Keep clips chronological.
+- Use only the provided timestamps.
+- You may combine adjacent caption rows.
+- Include Portuguese (PT-BR) translation.
+
+Transcript window JSON:
+${JSON.stringify(windowSegments)}`;
+
+  const response = await ai.models.generateContent({
+    model: geminiModel,
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: AI_SHADOWING_SEGMENTS_SCHEMA,
+      temperature: 0.15,
+    },
+  });
+
+  const responseText = response.text;
+  if (!responseText) {
+    throw new Error("Empty response from Gemini.");
+  }
+
+  const parsed = JSON.parse(responseText);
+  if (!Array.isArray(parsed)) {
+    throw new Error("Gemini did not return a phrase array.");
+  }
+
+  const normalized = normalizeAiShadowingPhrases(parsed, windowSegments).slice(0, maxPhrases);
+  if (normalized.length === 0) {
+    throw new Error("Gemini returned no usable clips for this window.");
+  }
+
+  return normalized;
 }
 
 function getYoutubeText(value: any) {
@@ -863,7 +1296,64 @@ async function searchYoutubeRecommendations(theme: string, difficulty: string) {
 export async function createApp({ includeFrontend = true } = {}) {
   const app = express();
 
-  app.use(express.json());
+  app.use(express.json({ limit: "2mb" }));
+  app.use("/offline-library", express.static(offlineLibraryDir));
+
+  app.get("/api/settings/ai", (_req, res) => {
+    if (!runtimeSettingsPath) return res.sendStatus(404);
+    return res.json({ configured: isUsableGeminiKey(), model: geminiModel });
+  });
+
+  app.post("/api/settings/ai", async (req, res) => {
+    if (!runtimeSettingsPath) return res.sendStatus(404);
+
+    const apiKey = String(req.body?.apiKey || "").trim();
+    if (apiKey.length < 20) {
+      return res.status(400).json({ error: "Cole uma chave válida da API do Google Gemini." });
+    }
+
+    try {
+      await writeFile(runtimeSettingsPath, JSON.stringify({ geminiApiKey: apiKey }, null, 2), { mode: 0o600 });
+      configureGeminiApiKey(apiKey);
+      return res.json({ configured: true, model: geminiModel });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message || "Não foi possível salvar a chave." });
+    }
+  });
+
+  const allowMobileLessonRequests = (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    next();
+  };
+
+  app.options("/api/segmentTranscript", allowMobileLessonRequests, (_req, res) => res.sendStatus(204));
+  app.post("/api/segmentTranscript", allowMobileLessonRequests, async (req, res) => {
+    const transcriptData = normalizeTranscriptSegments(Array.isArray(req.body?.transcriptData) ? req.body.transcriptData : []);
+    if (transcriptData.length === 0) {
+      return res.status(400).json({ error: "transcriptData array is required" });
+    }
+
+    if (geminiSegmentationEnabled) {
+      try {
+        const phrases = await buildAiShadowingTranscript(transcriptData);
+        res.setHeader("X-Transcript-Segmentation", "gemini");
+        return res.json(phrases);
+      } catch (error: any) {
+        console.warn("Mobile AI segmentation failed:", error.message);
+      }
+    }
+
+    const groupedPhrases = groupSegmentsForShadowing(transcriptData);
+    res.setHeader("X-Transcript-Segmentation", "local-fallback");
+    try {
+      return res.json(await enrichTranscript(groupedPhrases));
+    } catch (error: any) {
+      console.warn("Mobile transcript enrichment failed:", error.message);
+      return res.json(toBasicPhrases(groupedPhrases));
+    }
+  });
 
   // API Route for pronunciation analysis
   app.post("/api/analyzePronunciation", async (req, res) => {
@@ -917,7 +1407,7 @@ Return an overall score 0-100.`;
       }
 
       const response = await ai.models.generateContent({
-        model: "gemini-1.5-flash",
+        model: geminiModel,
         contents: [
           prompt,
           {
@@ -1027,6 +1517,110 @@ Return an overall score 0-100.`;
     }
   });
 
+  app.get("/api/offline/library", async (_req, res) => {
+    res.json({ videos: await listOfflineVideos() });
+  });
+
+  app.get("/api/offline/status/:videoId", async (req, res) => {
+    const { videoId } = req.params;
+    if (!isValidVideoId(videoId)) {
+      return res.status(400).json({ error: "videoId is invalid" });
+    }
+
+    const metadata = await readOfflineVideoMetadata(videoId);
+    if (metadata) {
+      return res.json({ videoId, status: "ready", progress: 100, metadata });
+    }
+
+    const job = offlineDownloadJobs.get(videoId);
+    return res.json(job || { videoId, status: "missing", progress: 0 });
+  });
+
+  app.get("/api/offline/lesson/:videoId", async (req, res) => {
+    const { videoId } = req.params;
+    if (!isValidVideoId(videoId) || !(await readOfflineVideoMetadata(videoId))) {
+      return res.status(404).json({ error: "Offline video not found" });
+    }
+
+    try {
+      return res.json(await ensureOfflineLesson(videoId));
+    } catch (error: any) {
+      console.error(`Offline lesson failed (${videoId}):`, error.message);
+      return res.status(500).json({ error: "Não foi possível preparar a aula offline." });
+    }
+  });
+
+  app.post("/api/offline/download", async (req, res) => {
+    const { videoId, url, quality = "360p" } = req.body;
+    if (!videoId || !isValidVideoId(videoId)) {
+      return res.status(400).json({ error: "videoId is required" });
+    }
+
+    const existingMetadata = await readOfflineVideoMetadata(videoId);
+    if (existingMetadata) {
+      return res.json({ videoId, status: "ready", progress: 100, metadata: existingMetadata });
+    }
+
+    const existingJob = offlineDownloadJobs.get(videoId);
+    if (existingJob?.status === "downloading") {
+      return res.status(202).json(existingJob);
+    }
+
+    const initialJob: OfflineDownloadJob = {
+      videoId,
+      status: "downloading",
+      stage: "starting",
+      message: "Preparando download...",
+      progress: 0,
+    };
+    offlineDownloadJobs.set(videoId, initialJob);
+    console.log("[offline-download] started", { videoId, quality });
+    res.status(202).json(initialJob);
+
+    void (async () => {
+      try {
+        const engine = await getOfflineEngine();
+        const result = await engine.download(url || videoId, {
+          quality,
+          libraryDir: offlineLibraryDir,
+          onProgress(event: { stage?: string; message?: string; progress?: number | null }) {
+            offlineDownloadJobs.set(videoId, {
+              videoId,
+              status: "downloading",
+              stage: event.stage,
+              message: event.message,
+              progress: event.progress ?? offlineDownloadJobs.get(videoId)?.progress ?? 0,
+            });
+          },
+        });
+        await ensureOfflineLesson(videoId);
+        offlineDownloadJobs.set(videoId, {
+          videoId,
+          status: "ready",
+          stage: "done",
+          message: "Pronto para uso offline.",
+          progress: 100,
+          metadata: result.metadata,
+        });
+        console.log("[offline-download] completed", {
+          videoId,
+          quality: result.metadata.format?.quality,
+          contentLength: result.metadata.format?.contentLength,
+        });
+      } catch (error: any) {
+        console.error(`Offline download failed (${videoId}):`, error.message);
+        offlineDownloadJobs.set(videoId, {
+          videoId,
+          status: "error",
+          stage: "error",
+          message: "Não foi possível baixar este vídeo.",
+          progress: 0,
+          error: error.message,
+        });
+      }
+    })();
+  });
+
   app.post("/api/recommendSimilarVideos", async (req, res) => {
     const { videoId, title, channel, theme } = req.body;
 
@@ -1067,6 +1661,39 @@ Return an overall score 0-100.`;
     } catch (error: any) {
       console.error("Error in recommendSimilarVideos:", error);
       res.json(getCatalogRecommendations(VIDEO_CATALOG, theme || "Viagem e Cultura", "intermediate", new Set(videoId ? [videoId] : [])).slice(0, 6));
+    }
+  });
+
+  app.post("/api/refineShadowingWindow", async (req, res) => {
+    const { videoId, start, end, maxPhrases } = req.body;
+
+    if (!videoId || !Number.isFinite(Number(start)) || !Number.isFinite(Number(end)) || Number(end) <= Number(start)) {
+      return res.status(400).json({ error: "videoId, start and end are required" });
+    }
+
+    try {
+      const transcriptSegments = await fetchYouTubeTranscriptSegments(videoId);
+      const windowStart = Math.max(0, Number(start) - 0.4);
+      const windowEnd = Number(end) + 0.6;
+      const phraseLimit = Math.max(1, Math.min(Number(maxPhrases) || 5, 8));
+
+      try {
+        const aiPhrases = await buildAiShadowingWindow(transcriptSegments, windowStart, windowEnd, phraseLimit);
+        res.setHeader("X-Transcript-Segmentation", "gemini-window");
+        return res.json(aiPhrases);
+      } catch (aiError: any) {
+        console.error("AI window refinement failed:", aiError.message);
+      }
+
+      const fallbackWindowSegments = normalizeTranscriptSegments(transcriptSegments)
+        .filter((segment) => segment.end >= windowStart && segment.start <= windowEnd);
+      const fallbackPhrases = groupSegmentsForShadowing(fallbackWindowSegments).slice(0, phraseLimit);
+
+      res.setHeader("X-Transcript-Segmentation", "local-window-fallback");
+      return res.json(toBasicPhrases(fallbackPhrases));
+    } catch (error: any) {
+      console.error("Error in refineShadowingWindow:", error);
+      return res.status(500).json({ error: error.message || "Failed to refine shadowing window" });
     }
   });
 
@@ -1157,21 +1784,35 @@ Return an overall score 0-100.`;
         return res.status(404).json({ error: "No transcript found for this video." });
       }
 
-      const transcriptData = groupSegmentsForShadowing(transcriptSegments);
+      if (geminiSegmentationEnabled) {
+        let shadowingPhrases;
+        try {
+          console.log(`Sending full transcript (${transcriptSegments.length} segments) to Gemini for shadowing segmentation...`);
+          shadowingPhrases = await buildAiShadowingTranscript(transcriptSegments);
+          res.setHeader("X-Transcript-Segmentation", "gemini");
+          console.log(`Gemini selected ${shadowingPhrases.length} shadowing clips.`);
+          return res.json(shadowingPhrases);
+        } catch (segmentationError: any) {
+          console.error("AI shadowing segmentation failed:", segmentationError.message);
+        }
+      }
 
-      console.log(`Sending ${transcriptData.length} items to Gemini...`);
+      const transcriptData = groupSegmentsForShadowing(transcriptSegments);
+      res.setHeader("X-Transcript-Segmentation", "local-fallback");
+      console.log(`Using local fallback with ${transcriptData.length} shadowing clips.`);
 
       let enrichedPhrases;
       try {
+        console.log(`Sending ${transcriptData.length} fallback items to Gemini for enrichment...`);
         enrichedPhrases = await enrichTranscript(transcriptData);
       } catch (enrichmentError: any) {
         console.error("Transcript enrichment failed:", enrichmentError.message);
         res.setHeader("X-Transcript-Enrichment", "failed");
         return res.json(toBasicPhrases(transcriptData));
       }
-      
-      console.log(`Successfully generated ${enrichedPhrases.length} enriched phrases.`);
-      res.json(enrichedPhrases);
+
+      console.log(`Successfully generated ${enrichedPhrases.length} enriched fallback phrases.`);
+      return res.json(enrichedPhrases);
     } catch (error: any) {
       console.error("Transcript pipeline failed:", error.message);
       return res.status(400).json({
@@ -1186,12 +1827,17 @@ Return an overall score 0-100.`;
     if (process.env.NODE_ENV !== "production") {
       const { createServer: createViteServer } = await import("vite");
       const vite = await createViteServer({
-        server: { middlewareMode: true },
+        server: {
+          middlewareMode: true,
+          watch: {
+            ignored: ["**/offline-lab/library/**"],
+          },
+        },
         appType: "spa",
       });
       app.use(vite.middlewares);
     } else {
-      const distPath = path.join(process.cwd(), "dist");
+      const distPath = process.env.SHADOWING_WEB_DIR || path.join(appRootDir, "dist");
       app.use(express.static(distPath));
       app.get("*", (req, res) => {
         res.sendFile(path.join(distPath, "index.html"));

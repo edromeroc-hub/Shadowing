@@ -1,0 +1,14 @@
+{
+  "name": "shadowing-bridge-lab",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "relay": "node relay-server.mjs",
+    "bridge": "node local-bridge.mjs",
+    "test": "node test-client.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

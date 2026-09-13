@@ -1,0 +1,40 @@
+{
+  "name": "ShadowingAI — Eduardo Romero",
+  "identifier": "com.edromero.shadowing.source",
+  "subtitle": "Treine inglês com shadowing",
+  "description": "Distribuição independente do ShadowingAI para AltStore Classic. Adicione esta source para instalar o aplicativo e receber suas atualizações. Não compatível com AltStore PAL.",
+  "website": "https://github.com/edromeroc-hub/Shadowing",
+  "iconURL": "https://github.com/edromeroc-hub/Shadowing/releases/download/ios-classic-1.0-1/icon.png",
+  "tintColor": "5B8CFF",
+  "apps": [
+    {
+      "name": "ShadowingAI",
+      "bundleIdentifier": "com.edromero.shadowing",
+      "developerName": "Eduardo Romero",
+      "subtitle": "Ouça, repita e pratique inglês",
+      "localizedDescription": "Pratique inglês com trechos de vídeos, controles de repetição, histórico de estudo e exercícios de escuta. Versão experimental para AltStore Classic, com instalação e renovação pelo AltServer. Esta versão usa conexão à internet para obter legendas e reproduzir vídeos. O download permanente de vídeos para uso totalmente offline ainda não está incluído. Tradução e segmentação com Gemini dependem de um serviço de IA configurado; elas não são garantidas neste pacote.",
+      "iconURL": "https://github.com/edromeroc-hub/Shadowing/releases/download/ios-classic-1.0-1/icon.png",
+      "tintColor": "5B8CFF",
+      "category": "utilities",
+      "versions": [
+        {
+          "version": "1.0",
+          "buildVersion": "1",
+          "date": "2026-09-07",
+          "localizedDescription": "Primeira distribuição pela source. Pacote iOS gerado em 3 de agosto de 2026, versão 1.0, build 1.",
+          "downloadURL": "https://github.com/edromeroc-hub/Shadowing/releases/download/ios-classic-1.0-1/ShadowingAI-1.0-altstore-20260803-095434.ipa",
+          "size": 769206,
+          "sha256": "8bd434707e880743d7653b2e1374eff64c8350e7faf3c0d789964ab5fc5bc891",
+          "minOSVersion": "15.0"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {
+          "NSMicrophoneUsageDescription": "O ShadowingAI usa o microfone para gravar sua pronúncia e comparar seu treino de inglês."
+        }
+      }
+    }
+  ],
+  "news": []
+}

@@ -8,3 +8,7 @@ coverage/
 !.env.example
 app/applet/
 .vercel
+transcricao-*.md
+content/raw/
+content/processed/
+rights/evidence/private/

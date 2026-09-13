@@ -1,18 +1,32 @@
 {
-  "name": "react-example",
+  "name": "shadowing-ai",
+  "productName": "ShadowingAI",
+  "description": "Treinamento de inglês com shadowing, legendas e prática por trechos.",
+  "author": "Eduardo Romero",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.2",
+  "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
     "test-sync": "node test-direct.cjs",
+    "build:web": "vite build",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist dist-server",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "ios:sync": "npm run build:web && cap sync ios",
+    "ios:open": "cap open ios",
+    "ios:run": "npm run ios:sync && cap run ios",
+    "ios:ipa": "bash scripts/build-altstore.sh",
+    "mac:dev": "npm run build && electron .",
+    "mac:app": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir --arm64",
+    "mac:dmg": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg --arm64"
   },
   "dependencies": {
+    "@capacitor/core": "^8.4.1",
+    "@capacitor/ios": "^8.4.1",
     "@distube/ytdl-core": "^4.16.12",
     "@google/genai": "^1.29.0",
     "@tailwindcss/vite": "^4.1.14",
@@ -32,6 +46,7 @@
     "youtubei.js": "^17.0.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.4.1",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
@@ -39,6 +54,45 @@
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.3"
+    "vite": "^6.2.3",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.edromero.shadowing.mac",
+    "productName": "ShadowingAI",
+    "directories": {
+      "output": "releases/mac"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "mac": {
+      "category": "public.app-category.education",
+      "icon": "ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "ShadowingAI",
+      "artifactName": "ShadowingAI-${version}-mac-${arch}.${ext}",
+      "backgroundColor": "#07090f",
+      "window": {
+        "width": 560,
+        "height": 380
+      }
+    }
   }
 }
