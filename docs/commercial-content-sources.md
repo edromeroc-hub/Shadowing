@@ -2,6 +2,8 @@
 
 Esta lista é um ponto de partida. Cada arquivo continua sujeito à verificação individual e ao registro de evidências previsto em `CONTENT_RIGHTS_POLICY.md`.
 
+O catálogo inicial de candidatos dos Estados Unidos e Reino Unido está em `docs/public-domain-catalog.md`; os registros estruturados estão em `content/catalog/candidates.json`.
+
 ## Melhores opções
 
 | Fonte | Potencial | Cuidados |

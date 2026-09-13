@@ -84,6 +84,7 @@ O app comercial remove ou desativa:
 - permissão comercial, permissão para adaptações e territórios;
 - documentos de cessão, licenciamento e autorização de imagem/voz;
 - responsável pela revisão, data de aprovação e eventual expiração.
+- territórios autorizados; uma lista vazia impede a publicação.
 
 ### Aula
 
