@@ -5,15 +5,20 @@ import {defineConfig, loadEnv} from 'vite';
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
+  const commercialCatalogMode = env.VITE_COMMERCIAL_CATALOG_MODE === 'true';
   return {
     plugins: [react(), tailwindcss()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+      '__COMMERCIAL_CATALOG_MODE__': JSON.stringify(commercialCatalogMode),
     },
     resolve: {
-      alias: {
-        '@': path.resolve(__dirname, '.'),
-      },
+      alias: [
+        { find: '@', replacement: path.resolve(__dirname, '.') },
+        ...(commercialCatalogMode
+          ? [{ find: './App.tsx', replacement: path.resolve(__dirname, 'src/CommercialApp.tsx') }]
+          : []),
+      ],
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.

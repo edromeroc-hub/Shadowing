@@ -103,19 +103,23 @@ O app comercial remove ou desativa:
 
 ### Fase 1 — conformidade do aplicativo
 
-- remover o fluxo público de URL do YouTube;
+- [x] remover o fluxo público de URL do YouTube no modo comercial;
 - criar um `ContentProvider` para separar player e origem da mídia;
-- substituir dados de vídeo por catálogo local de demonstração licenciado;
-- adicionar tela de créditos e licenças por aula;
-- revisar privacidade, login e exclusão de conta.
+- [x] consumir catálogo privado pela API comercial;
+- [x] adicionar tela de créditos e licenças por aula;
+- [x] trocar login local por Supabase Auth e adicionar exclusão de conta;
+- [x] concluir telas internas de créditos, privacidade e termos;
+- [ ] publicar URLs jurídicas revisadas para produção.
 
 ### Fase 2 — backend comercial
 
-- autenticação e banco;
-- storage/CDN;
-- API de catálogo e progresso;
-- registro auditável de direitos;
-- URLs assinadas e controle de acesso.
+- [x] autenticação, banco e RLS;
+- [x] storage privado para mídia, arte e evidências;
+- [x] API autenticada de catálogo e progresso;
+- [x] registro auditável de direitos e territórios;
+- [x] URLs assinadas e controle de acesso;
+- [x] limite mensal e auditoria de uso da IA;
+- [ ] provisionar e validar o projeto Supabase de produção (bloqueado pelo limite de projetos ativos do plano gratuito).
 
 ### Fase 3 — estúdio editorial
 

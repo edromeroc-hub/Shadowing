@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { createYoutubeEngine } from "./offline-lab/youtube-engine.mjs";
+import { createCommercialBackend } from "./server/commercialBackend";
 
 dotenv.config({ path: process.env.SHADOWING_ENV_FILE || undefined });
 
@@ -1295,17 +1296,30 @@ async function searchYoutubeRecommendations(theme: string, difficulty: string) {
 
 export async function createApp({ includeFrontend = true } = {}) {
   const app = express();
+  const commercialBackend = createCommercialBackend();
+  const legacyYoutubeEnabled = process.env.ENABLE_LEGACY_YOUTUBE?.trim().toLowerCase() === "true"
+    || !commercialBackend.cloudMode;
 
-  app.use(express.json({ limit: "2mb" }));
+  app.use(express.json({ limit: "4mb" }));
   app.use("/offline-library", express.static(offlineLibraryDir));
+  app.use("/api/commercial", commercialBackend.router);
+
+  const requireLegacyYoutube = (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!legacyYoutubeEnabled) {
+      return res.status(404).json({
+        error: "Esta versão usa somente a biblioteca própria de conteúdos licenciados.",
+      });
+    }
+    return next();
+  };
 
   app.get("/api/settings/ai", (_req, res) => {
-    if (!runtimeSettingsPath) return res.sendStatus(404);
+    if (commercialBackend.cloudMode || !runtimeSettingsPath) return res.sendStatus(404);
     return res.json({ configured: isUsableGeminiKey(), model: geminiModel });
   });
 
   app.post("/api/settings/ai", async (req, res) => {
-    if (!runtimeSettingsPath) return res.sendStatus(404);
+    if (commercialBackend.cloudMode || !runtimeSettingsPath) return res.sendStatus(404);
 
     const apiKey = String(req.body?.apiKey || "").trim();
     if (apiKey.length < 20) {
@@ -1323,13 +1337,13 @@ export async function createApp({ includeFrontend = true } = {}) {
 
   const allowMobileLessonRequests = (_req: express.Request, res: express.Response, next: express.NextFunction) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
     next();
   };
 
   app.options("/api/segmentTranscript", allowMobileLessonRequests, (_req, res) => res.sendStatus(204));
-  app.post("/api/segmentTranscript", allowMobileLessonRequests, async (req, res) => {
+  app.post("/api/segmentTranscript", allowMobileLessonRequests, commercialBackend.protectAi, async (req, res) => {
     const transcriptData = normalizeTranscriptSegments(Array.isArray(req.body?.transcriptData) ? req.body.transcriptData : []);
     if (transcriptData.length === 0) {
       return res.status(400).json({ error: "transcriptData array is required" });
@@ -1356,25 +1370,35 @@ export async function createApp({ includeFrontend = true } = {}) {
   });
 
   // API Route for pronunciation analysis
-  app.post("/api/analyzePronunciation", async (req, res) => {
-    const { audioUrl, phrase } = req.body;
+  app.post("/api/analyzePronunciation", commercialBackend.protectAi, async (req, res) => {
+    const { audioUrl, audioBase64, mimeType: requestedMimeType, phrase } = req.body;
 
-    if (!audioUrl || !phrase) {
-      return res.status(400).json({ error: "audioUrl and phrase are required" });
+    if (!phrase || (!audioBase64 && !audioUrl)) {
+      return res.status(400).json({ error: "Áudio e frase são obrigatórios." });
     }
 
     try {
       console.log(`Analyzing pronunciation for phrase: "${phrase}"`);
-      
-      const audioRes = await fetch(audioUrl);
-      if (!audioRes.ok) {
-        throw new Error(`Failed to fetch audio from URL: ${audioRes.statusText}`);
+
+      let base64Data: string;
+      let mimeType: string;
+      if (audioBase64) {
+        base64Data = String(audioBase64).replace(/^data:[^;]+;base64,/, '');
+        mimeType = String(requestedMimeType || 'audio/webm').split(';')[0].toLowerCase();
+        const allowedMimeTypes = new Set(['audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/ogg']);
+        if (!allowedMimeTypes.has(mimeType) || base64Data.length > 2_500_000 || !/^[A-Za-z0-9+/=]+$/.test(base64Data)) {
+          return res.status(400).json({ error: 'Formato de áudio inválido ou arquivo muito grande.' });
+        }
+      } else {
+        if (commercialBackend.cloudMode) {
+          return res.status(400).json({ error: 'Envie a gravação diretamente pelo aplicativo.' });
+        }
+        const audioRes = await fetch(audioUrl);
+        if (!audioRes.ok) throw new Error(`Failed to fetch audio from URL: ${audioRes.statusText}`);
+        const arrayBuffer = await audioRes.arrayBuffer();
+        base64Data = Buffer.from(arrayBuffer).toString("base64");
+        mimeType = audioRes.headers.get("content-type") || "audio/webm";
       }
-      
-      const arrayBuffer = await audioRes.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      const base64Data = buffer.toString("base64");
-      const mimeType = audioRes.headers.get("content-type") || "audio/webm";
 
       const schema: Schema = {
         type: Type.OBJECT,
@@ -1468,7 +1492,7 @@ Return an overall score 0-100.`;
   ];
 
   // API Route for recommending YouTube videos
-  app.post("/api/recommendVideos", async (req, res) => {
+  app.post("/api/recommendVideos", requireLegacyYoutube, async (req, res) => {
     const { theme, difficulty } = req.body;
 
     if (!theme || !difficulty) {
@@ -1501,7 +1525,7 @@ Return an overall score 0-100.`;
     }
   });
 
-  app.get("/api/videoMetadata/:videoId", async (req, res) => {
+  app.get("/api/videoMetadata/:videoId", requireLegacyYoutube, async (req, res) => {
     const { videoId } = req.params;
 
     if (!videoId) {
@@ -1517,11 +1541,11 @@ Return an overall score 0-100.`;
     }
   });
 
-  app.get("/api/offline/library", async (_req, res) => {
+  app.get("/api/offline/library", requireLegacyYoutube, async (_req, res) => {
     res.json({ videos: await listOfflineVideos() });
   });
 
-  app.get("/api/offline/status/:videoId", async (req, res) => {
+  app.get("/api/offline/status/:videoId", requireLegacyYoutube, async (req, res) => {
     const { videoId } = req.params;
     if (!isValidVideoId(videoId)) {
       return res.status(400).json({ error: "videoId is invalid" });
@@ -1536,7 +1560,7 @@ Return an overall score 0-100.`;
     return res.json(job || { videoId, status: "missing", progress: 0 });
   });
 
-  app.get("/api/offline/lesson/:videoId", async (req, res) => {
+  app.get("/api/offline/lesson/:videoId", requireLegacyYoutube, async (req, res) => {
     const { videoId } = req.params;
     if (!isValidVideoId(videoId) || !(await readOfflineVideoMetadata(videoId))) {
       return res.status(404).json({ error: "Offline video not found" });
@@ -1550,7 +1574,7 @@ Return an overall score 0-100.`;
     }
   });
 
-  app.post("/api/offline/download", async (req, res) => {
+  app.post("/api/offline/download", requireLegacyYoutube, async (req, res) => {
     const { videoId, url, quality = "360p" } = req.body;
     if (!videoId || !isValidVideoId(videoId)) {
       return res.status(400).json({ error: "videoId is required" });
@@ -1621,7 +1645,7 @@ Return an overall score 0-100.`;
     })();
   });
 
-  app.post("/api/recommendSimilarVideos", async (req, res) => {
+  app.post("/api/recommendSimilarVideos", requireLegacyYoutube, async (req, res) => {
     const { videoId, title, channel, theme } = req.body;
 
     try {
@@ -1664,7 +1688,7 @@ Return an overall score 0-100.`;
     }
   });
 
-  app.post("/api/refineShadowingWindow", async (req, res) => {
+  app.post("/api/refineShadowingWindow", requireLegacyYoutube, commercialBackend.protectAi, async (req, res) => {
     const { videoId, start, end, maxPhrases } = req.body;
 
     if (!videoId || !Number.isFinite(Number(start)) || !Number.isFinite(Number(end)) || Number(end) <= Number(start)) {
@@ -1697,7 +1721,7 @@ Return an overall score 0-100.`;
     }
   });
 
-  app.get("/api/test-transcript/:videoId", async (req, res) => {
+  app.get("/api/test-transcript/:videoId", requireLegacyYoutube, async (req, res) => {
     try {
       const { videoId } = req.params;
       const response = await youtubeFetch(`https://www.youtube.com/watch?v=${videoId}`);
@@ -1729,7 +1753,7 @@ Return an overall score 0-100.`;
   });
 
   // Parse manually uploaded SRT transcript logic
-  app.post("/api/enrichManualTranscript", async (req, res) => {
+  app.post("/api/enrichManualTranscript", commercialBackend.protectAi, async (req, res) => {
     const { transcriptData } = req.body;
     
     if (!transcriptData || !Array.isArray(transcriptData) || transcriptData.length === 0) {
@@ -1759,7 +1783,7 @@ Return an overall score 0-100.`;
   });
 
   // API Route for fetching and enriching the transcript
-  app.post("/api/getEnrichedTranscript", async (req, res) => {
+  app.post("/api/getEnrichedTranscript", requireLegacyYoutube, commercialBackend.protectAi, async (req, res) => {
     const { videoId } = req.body;
 
     if (!videoId) {

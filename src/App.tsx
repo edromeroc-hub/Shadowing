@@ -3,6 +3,23 @@ import YouTube from 'react-youtube';
 import { Capacitor } from '@capacitor/core';
 import { Mic, SkipBack, SkipForward, Repeat, Link2, Play, Loader2, LogIn, LogOut, ArrowLeft, Search, Youtube, Target, History, Trash2, UserPlus, SlidersHorizontal, Download, CheckCircle2, HardDrive, Eye, EyeOff, Settings, KeyRound } from 'lucide-react';
 import { buildLocalShadowingLesson } from './lib/shadowingLesson';
+import {
+  commercialAuthorizedFetch,
+  deleteCommercialAccount,
+  loadCommercialCatalog,
+  loadCommercialContent,
+  loadCommercialMedia,
+  loadCommercialProgress,
+  saveCommercialProgress,
+  type CommercialContent,
+} from './lib/commercialApi';
+import {
+  commercialCloudMode,
+  mapSupabaseUser,
+  supabase,
+  supabaseConfigured,
+  type AppUser,
+} from './lib/supabase';
 import { YouTubeCaptions } from './native/youtubeCaptions';
 import { prepareNativeAILesson } from './native/lesson';
 
@@ -15,6 +32,9 @@ type Phrase = {
 
 type StudyHistoryItem = {
   videoId: string;
+  contentId?: string;
+  contentSlug?: string;
+  lessonId?: string;
   url: string;
   title: string;
   channel?: string;
@@ -25,11 +45,7 @@ type StudyHistoryItem = {
   lastStudiedAt: number;
 };
 
-type LocalUser = {
-  id: string;
-  name: string;
-  email: string;
-};
+type LocalUser = AppUser;
 
 type StoredLocalUser = LocalUser & {
   password: string;
@@ -243,6 +259,21 @@ function inferThemeFromText(title = "", channel = "") {
   return undefined;
 }
 
+function mapCommercialRecommendation(content: CommercialContent) {
+  return {
+    id: content.id,
+    title: content.title,
+    channel: content.creator,
+    thumbnail: content.artworkUrl || '',
+    difficulty: content.difficulty,
+    commercialContent: content,
+  };
+}
+
+function appApiFetch(path: string, init?: RequestInit) {
+  return commercialCloudMode ? commercialAuthorizedFetch(path, init) : fetch(path, init);
+}
+
 // Utilities for converting timecode to seconds
 function timeToSeconds(timeStr: string) {
   const parts = timeStr.trim().split(':');
@@ -446,6 +477,8 @@ export default function App() {
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
+  const [authSubmitting, setAuthSubmitting] = useState(false);
   const [desktopSettingsOpen, setDesktopSettingsOpen] = useState(false);
   const [geminiConfigured, setGeminiConfigured] = useState(false);
   const [geminiKeyInput, setGeminiKeyInput] = useState('');
@@ -459,6 +492,9 @@ export default function App() {
   const [videoId, setVideoId] = useState("0kH8pY1mE1M");
   const [currentVideoTitle, setCurrentVideoTitle] = useState("YouTube");
   const [currentVideoChannel, setCurrentVideoChannel] = useState("YouTube");
+  const [currentContentSlug, setCurrentContentSlug] = useState('');
+  const [currentLessonId, setCurrentLessonId] = useState('');
+  const [currentVideoArtwork, setCurrentVideoArtwork] = useState('');
   const [activePhraseIndex, setActivePhraseIndex] = useState(0);
   const [isLoopActive, setIsLoopActive] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
@@ -563,6 +599,107 @@ export default function App() {
       writeStudyHistory(next, user?.id);
       return next;
     });
+
+    if (commercialCloudMode && user && item.contentId) {
+      const completedPercent = item.phraseCount > 0
+        ? Math.min(100, Math.round(((item.phraseIndex + 1) / item.phraseCount) * 100))
+        : 0;
+      void saveCommercialProgress(item.contentId, {
+        lessonId: item.lessonId || null,
+        segmentPosition: item.phraseIndex,
+        completedPercent,
+        state: { contentSlug: item.contentSlug },
+      }).catch((progressError) => console.warn('Commercial progress sync failed:', progressError));
+    }
+  };
+
+  const refreshCommercialStudyHistory = async (activeUser = user) => {
+    if (!commercialCloudMode || !activeUser) return;
+    const [catalog, progress] = await Promise.all([
+      loadCommercialCatalog(),
+      loadCommercialProgress(),
+    ]);
+    const byId = new Map(catalog.map((content) => [content.id, content]));
+    const history = progress.flatMap((item) => {
+      const content = byId.get(item.content_id);
+      if (!content) return [];
+      return [{
+        videoId: content.id,
+        contentId: content.id,
+        contentSlug: content.slug,
+        lessonId: item.lesson_id || content.lesson?.id,
+        url: `catalog:${content.slug}`,
+        title: content.title,
+        channel: content.creator,
+        theme: content.theme,
+        thumbnail: content.artworkUrl || '',
+        phraseIndex: item.segment_position,
+        phraseCount: content.lesson?.segmentCount || 0,
+        lastStudiedAt: new Date(item.last_studied_at).getTime(),
+      } satisfies StudyHistoryItem];
+    });
+    setStudyHistory(history.slice(0, MAX_STUDY_HISTORY_ITEMS));
+  };
+
+  const startCommercialPractice = async (content: CommercialContent, phraseIndex = 0) => {
+    if (!user) {
+      openAuth('login');
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    try {
+      const [detail, media] = await Promise.all([
+        loadCommercialContent(content.slug),
+        loadCommercialMedia(content.slug),
+      ]);
+      const lesson = detail.lesson;
+      const lessonPhrases = lesson?.segments || [];
+      if (!lesson || lessonPhrases.length === 0) {
+        throw new Error('Esta aula ainda não possui frases publicadas.');
+      }
+
+      pendingPhraseIndexRef.current = phraseIndex;
+      setVideoId(detail.id);
+      setUrl(`catalog:${detail.slug}`);
+      setCurrentContentSlug(detail.slug);
+      setCurrentLessonId(lesson.id);
+      setCurrentVideoTitle(detail.title);
+      setCurrentVideoChannel(detail.creator);
+      setCurrentVideoArtwork(detail.artworkUrl || '');
+      setNativeVideoPaths((paths) => ({ ...paths, [detail.id]: media.url }));
+      setOfflineVideoIds((ids) => new Set([...ids, detail.id]));
+      setPhrases(lessonPhrases);
+      setActivePhraseIndex(Math.min(phraseIndex, Math.max(lessonPhrases.length - 1, 0)));
+      setFeedback(null);
+      setRecordingUrl(null);
+      setPlayerReady(false);
+      setHasStartedPlaying(false);
+      setPlayerCrashed(false);
+      playerRef.current = null;
+      setPlayerInstanceKey((current) => current + 1);
+      saveStudyProgress({
+        videoId: detail.id,
+        contentId: detail.id,
+        contentSlug: detail.slug,
+        lessonId: lesson.id,
+        url: `catalog:${detail.slug}`,
+        title: detail.title,
+        channel: detail.creator,
+        theme: detail.theme,
+        thumbnail: detail.artworkUrl || '',
+        phraseIndex,
+        phraseCount: lessonPhrases.length,
+        lastStudiedAt: Date.now(),
+      });
+      setCurrentScreen('practice');
+    } catch (commercialError: any) {
+      setError(commercialError.message || 'Não foi possível abrir esta aula.');
+      alert(commercialError.message || 'Não foi possível abrir esta aula.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const startPractice = async (id: string, fullUrl: string, phraseIndex = 0, title?: string, channel?: string, theme?: string) => {
@@ -571,6 +708,9 @@ export default function App() {
     setUrl(fullUrl);
     setCurrentVideoTitle(title || `YouTube ${id}`);
     setCurrentVideoChannel(channel || "YouTube");
+    setCurrentContentSlug('');
+    setCurrentLessonId('');
+    setCurrentVideoArtwork('');
     setPhrases([]);
     setFeedback(null);
     setRecordingUrl(null);
@@ -628,7 +768,19 @@ export default function App() {
     setIsSearching(true);
     setRecommendations([]);
     try {
-      if (isNativeIOS()) {
+      if (commercialCloudMode) {
+        if (!user) {
+          openAuth('login');
+          return;
+        }
+        const catalog = await loadCommercialCatalog({
+          theme: selectedTheme,
+          difficulty: selectedDifficulty,
+        });
+        setRecommendations(catalog.map(mapCommercialRecommendation));
+        return;
+      }
+      if (isNativeIOS() && !commercialCloudMode) {
         const topics: Record<string, string> = {
           'Viagem e Cultura': 'travel culture vlog', 'Tecnologia': 'technology explained',
           'Negócios/Trabalho': 'business workplace conversation', 'Cinema e Séries': 'movie actor interview',
@@ -660,6 +812,16 @@ export default function App() {
     setIsSearching(true);
     setRecommendations([]);
     try {
+      if (commercialCloudMode) {
+        if (!user) {
+          openAuth('login');
+          return;
+        }
+        const catalog = await loadCommercialCatalog({ theme: item.theme });
+        setRecommendations(catalog.filter((content) => content.id !== item.contentId).map(mapCommercialRecommendation));
+        setCurrentScreen('discovery');
+        return;
+      }
       if (isNativeIOS()) {
         const result = await YouTubeCaptions.searchVideos({ query: `${item.channel || item.title} English` });
         setRecommendations(result.videos.filter((video) => video.id !== item.videoId));
@@ -778,28 +940,66 @@ export default function App() {
   };
 
   useEffect(() => {
-    const session = readLocalSession();
-    setUser(session);
-    setStudyHistory(readStudyHistory(session?.id));
+    let cancelled = false;
+    let unsubscribeAuth: (() => void) | undefined;
 
-    if (isNativeIOS()) {
-      void YouTubeCaptions.offlineLibrary().then(({ videos }) => {
-        setNativeVideoPaths(Object.fromEntries(videos.map((video) => [video.videoId, Capacitor.convertFileSrc(video.path)])));
-        setOfflineVideoIds(new Set(videos.map((video) => video.videoId)));
-      }).catch(console.error);
-      return;
+    if (supabase) {
+      void supabase.auth.getSession().then(({ data }) => {
+        if (cancelled) return;
+        const sessionUser = data.session?.user ? mapSupabaseUser(data.session.user) : null;
+        setUser(sessionUser);
+        if (sessionUser) {
+          setStudyHistory(readStudyHistory(sessionUser.id));
+          void refreshCommercialStudyHistory(sessionUser).catch(console.error);
+        } else {
+          setStudyHistory([]);
+        }
+      });
+
+      const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+        if (cancelled) return;
+        const sessionUser = session?.user ? mapSupabaseUser(session.user) : null;
+        setUser(sessionUser);
+        if (sessionUser) {
+          window.setTimeout(() => void refreshCommercialStudyHistory(sessionUser).catch(console.error), 0);
+        } else {
+          setStudyHistory([]);
+        }
+      });
+      unsubscribeAuth = () => data.subscription.unsubscribe();
+    } else {
+      const session = readLocalSession();
+      setUser(session);
+      setStudyHistory(readStudyHistory(session?.id));
     }
 
-    fetch('/api/offline/library')
-      .then((response) => response.ok ? response.json() : { videos: [] })
-      .then((data) => {
-        const ids = Array.isArray(data.videos) ? data.videos.map((video: any) => video.videoId).filter(Boolean) : [];
-        setOfflineVideoIds(new Set(ids));
-      })
-      .catch(() => setOfflineVideoIds(new Set()));
+    if (!commercialCloudMode) {
+      if (isNativeIOS()) {
+        void YouTubeCaptions.offlineLibrary().then(({ videos }) => {
+          if (cancelled) return;
+          setNativeVideoPaths(Object.fromEntries(videos.map((video) => [video.videoId, Capacitor.convertFileSrc(video.path)])));
+          setOfflineVideoIds(new Set(videos.map((video) => video.videoId)));
+        }).catch(console.error);
+      } else {
+        fetch('/api/offline/library')
+          .then((response) => response.ok ? response.json() : { videos: [] })
+          .then((data) => {
+            if (cancelled) return;
+            const ids = Array.isArray(data.videos) ? data.videos.map((video: any) => video.videoId).filter(Boolean) : [];
+            setOfflineVideoIds(new Set(ids));
+          })
+          .catch(() => setOfflineVideoIds(new Set()));
+      }
+    }
+
+    return () => {
+      cancelled = true;
+      unsubscribeAuth?.();
+    };
   }, []);
 
   useEffect(() => {
+    if (commercialCloudMode) return;
     if (isNativeIOS()) {
       void YouTubeCaptions.aiSettings().then((settings) => setGeminiConfigured(settings.configured)).catch(console.error);
       return;
@@ -844,6 +1044,7 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (commercialCloudMode) return;
     if (!discoveryVideoId) {
       setOfflineDownload({ videoId: '', status: 'idle' });
       return;
@@ -862,6 +1063,7 @@ export default function App() {
   }, [phraseTimingOffsets]);
 
   useEffect(() => {
+    if (commercialCloudMode) return;
     setStudyHistory(readStudyHistory(user?.id));
   }, [user?.id]);
 
@@ -900,6 +1102,24 @@ export default function App() {
     setRecordingUrl(null);
 
     try {
+      if (commercialCloudMode) {
+        if (!currentContentSlug) throw new Error('Selecione uma aula da biblioteca para começar.');
+        const [detail, media] = await Promise.all([
+          loadCommercialContent(currentContentSlug),
+          loadCommercialMedia(currentContentSlug),
+        ]);
+        const lessonPhrases = detail.lesson?.segments || [];
+        if (!detail.lesson || lessonPhrases.length === 0) {
+          throw new Error('Esta aula ainda não possui frases publicadas.');
+        }
+        setCurrentLessonId(detail.lesson.id);
+        setCurrentVideoArtwork(detail.artworkUrl || '');
+        setNativeVideoPaths((paths) => ({ ...paths, [detail.id]: media.url }));
+        setPhrases(lessonPhrases);
+        setActivePhraseIndex(Math.min(pendingPhraseIndexRef.current, Math.max(lessonPhrases.length - 1, 0)));
+        return;
+      }
+
       if (isNativeIOS()) {
         const nativeLesson = await loadNativeLesson(videoId);
         if (nativeLesson.title) setCurrentVideoTitle(nativeLesson.title);
@@ -911,7 +1131,7 @@ export default function App() {
 
       const res = offlineVideoIds.has(videoId)
         ? await fetch(`/api/offline/lesson/${videoId}`)
-        : await fetch("/api/getEnrichedTranscript", {
+        : await appApiFetch("/api/getEnrichedTranscript", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ videoId }),
@@ -1195,7 +1415,7 @@ export default function App() {
 
     refiningWindowKeysRef.current.add(windowKey);
 
-    fetch("/api/refineShadowingWindow", {
+    appApiFetch("/api/refineShadowingWindow", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1247,16 +1467,19 @@ export default function App() {
       : existing?.channel || 'YouTube';
     saveStudyProgress({
       videoId,
+      contentId: existing?.contentId || (currentContentSlug ? videoId : undefined),
+      contentSlug: existing?.contentSlug || currentContentSlug || undefined,
+      lessonId: existing?.lessonId || currentLessonId || undefined,
       url,
       title: resolvedTitle,
       channel: resolvedChannel,
       theme: existing?.theme,
-      thumbnail: existing?.thumbnail || `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
+      thumbnail: currentVideoArtwork || existing?.thumbnail || `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
       phraseIndex: activePhraseIndex,
       phraseCount: phrases.length,
       lastStudiedAt: Date.now(),
     });
-  }, [currentScreen, videoId, url, activePhraseIndex, phrases.length, currentVideoTitle, currentVideoChannel, user?.id]);
+  }, [currentScreen, videoId, url, activePhraseIndex, phrases.length, currentVideoTitle, currentVideoChannel, currentContentSlug, currentLessonId, currentVideoArtwork, user?.id]);
 
   const handlePrev = () => {
     if (phrases.length === 0) return;
@@ -1269,10 +1492,11 @@ export default function App() {
   const openAuth = (mode: 'login' | 'signup' = 'login') => {
     setAuthMode(mode);
     setAuthError(null);
+    setAuthMessage(null);
     setAuthOpen(true);
   };
 
-  const handleAuthSubmit = (event: any) => {
+  const handleAuthSubmit = async (event: any) => {
     event.preventDefault();
     const email = authEmail.trim().toLowerCase();
     const password = authPassword.trim();
@@ -1280,6 +1504,42 @@ export default function App() {
 
     if (!email || !password) {
       setAuthError('Digite e-mail e senha.');
+      return;
+    }
+
+    if (supabase) {
+      setAuthSubmitting(true);
+      setAuthError(null);
+      setAuthMessage(null);
+      try {
+        if (authMode === 'signup') {
+          const { data, error } = await supabase.auth.signUp({
+            email,
+            password,
+            options: { data: { display_name: name, country_code: 'BR' } },
+          });
+          if (error) throw error;
+          if (!data.session) {
+            setAuthMessage('Conta criada. Confirme o e-mail recebido para entrar.');
+            return;
+          }
+          const sessionUser = mapSupabaseUser(data.user!);
+          setUser(sessionUser);
+          void refreshCommercialStudyHistory(sessionUser).catch(console.error);
+        } else {
+          const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+          if (error) throw error;
+          const sessionUser = mapSupabaseUser(data.user);
+          setUser(sessionUser);
+          void refreshCommercialStudyHistory(sessionUser).catch(console.error);
+        }
+        setAuthOpen(false);
+        setAuthPassword('');
+      } catch (loginError: any) {
+        setAuthError(loginError.message || 'Não foi possível entrar.');
+      } finally {
+        setAuthSubmitting(false);
+      }
       return;
     }
 
@@ -1321,15 +1581,35 @@ export default function App() {
     setAuthPassword('');
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    if (supabase) {
+      await supabase.auth.signOut();
+      setUser(null);
+      setStudyHistory([]);
+      return;
+    }
     writeLocalSession(null);
     setUser(null);
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!commercialCloudMode || !supabase) return;
+    const confirmed = window.confirm('Excluir permanentemente sua conta e todo o progresso? Esta ação não pode ser desfeita.');
+    if (!confirmed) return;
+    try {
+      await deleteCommercialAccount();
+      await supabase.auth.signOut();
+      setUser(null);
+      setStudyHistory([]);
+    } catch (deleteError: any) {
+      alert(deleteError.message || 'Não foi possível excluir sua conta.');
+    }
   };
 
   const analyzePronunciationFeedback = async (audioUrl: string, phraseText: string) => {
     setIsAnalyzing(true);
     try {
-      if (isNativeIOS()) {
+      if (isNativeIOS() && !commercialCloudMode) {
         const blob = await (await fetch(audioUrl)).blob();
         const dataUrl = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
@@ -1350,7 +1630,7 @@ export default function App() {
         setFeedback(feedback);
         return;
       }
-      const res = await fetch("/api/analyzePronunciation", {
+      const res = await appApiFetch("/api/analyzePronunciation", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ audioUrl, phrase: phraseText }),
@@ -1471,7 +1751,9 @@ export default function App() {
               {authMode === 'login' ? 'Entrar' : 'Criar conta'}
             </h2>
             <p className="text-sm text-gray-400 mt-1">
-              Login local simples para salvar seu progresso neste computador.
+              {supabaseConfigured
+                ? 'Sua conta protege o progresso e os recursos de IA em todos os dispositivos.'
+                : 'Modo local: seu progresso fica salvo somente neste dispositivo.'}
             </p>
           </div>
           <button
@@ -1523,12 +1805,19 @@ export default function App() {
           </div>
         )}
 
+        {authMessage && (
+          <div className="mb-4 rounded-xl border border-emerald-500/30 bg-emerald-950/30 px-4 py-3 text-sm text-emerald-200">
+            {authMessage}
+          </div>
+        )}
+
         <button
           type="submit"
-          className="w-full py-3.5 rounded-xl bg-white text-black font-bold hover:bg-gray-100 transition-colors flex items-center justify-center gap-2"
+          disabled={authSubmitting}
+          className="w-full py-3.5 rounded-xl bg-white text-black font-bold hover:bg-gray-100 transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
         >
-          {authMode === 'login' ? <LogIn size={18} /> : <UserPlus size={18} />}
-          {authMode === 'login' ? 'Entrar' : 'Criar conta'}
+          {authSubmitting ? <Loader2 size={18} className="animate-spin" /> : authMode === 'login' ? <LogIn size={18} /> : <UserPlus size={18} />}
+          {authSubmitting ? 'Aguarde...' : authMode === 'login' ? 'Entrar' : 'Criar conta'}
         </button>
 
         <button
@@ -1588,7 +1877,7 @@ export default function App() {
     </div>
   ) : null;
 
-  const desktopSettingsButton = isMacDesktopApp() || isNativeIOS() ? (
+  const desktopSettingsButton = !commercialCloudMode && (isMacDesktopApp() || isNativeIOS()) ? (
     <button
       type="button"
       onClick={() => {
@@ -1615,9 +1904,16 @@ export default function App() {
           <div className="flex items-center gap-2">
             {desktopSettingsButton}
             {user ? (
-              <button onClick={handleLogout} className="glass-input px-5 py-2.5 rounded-full flex items-center text-gray-300 hover:text-white transition-colors text-sm font-medium">
-                <LogOut size={16} className="mr-2 opacity-70"/> {user.name}
-              </button>
+              <>
+                <button onClick={handleLogout} className="glass-input px-5 py-2.5 rounded-full flex items-center text-gray-300 hover:text-white transition-colors text-sm font-medium">
+                  <LogOut size={16} className="mr-2 opacity-70"/> {user.name}
+                </button>
+                {commercialCloudMode && (
+                  <button onClick={handleDeleteAccount} className="glass-input p-2.5 rounded-full text-gray-500 hover:text-red-300 transition-colors" title="Excluir conta" aria-label="Excluir conta">
+                    <Trash2 size={17} />
+                  </button>
+                )}
+              </>
             ) : (
               <button onClick={() => openAuth('login')} className="px-6 py-2.5 rounded-full flex items-center bg-white/10 hover:bg-white/20 border border-white/10 text-white transition-colors text-sm font-medium">
                 <LogIn size={16} className="mr-2 opacity-70"/> Entrar
@@ -1645,7 +1941,7 @@ export default function App() {
                   <History className="text-blue-300" size={18} />
                   <h2 className="text-sm md:text-base font-semibold text-gray-100">Continuar estudando</h2>
                 </div>
-                <span className="text-xs text-gray-500">{studyHistory.length} vídeos</span>
+                <span className="text-xs text-gray-500">{studyHistory.length} {commercialCloudMode ? 'aulas' : 'vídeos'}</span>
               </div>
 
               <div className="history-list flex overflow-x-auto gap-4 pb-2 hide-scrollbar snap-x">
@@ -1653,7 +1949,7 @@ export default function App() {
                   const progress = item.phraseCount > 0
                     ? Math.min(100, Math.round(((item.phraseIndex + 1) / item.phraseCount) * 100))
                     : 0;
-                  const isOffline = offlineVideoIds.has(item.videoId);
+                  const isOffline = !item.contentSlug && offlineVideoIds.has(item.videoId);
                   const isDownloading = offlineDownload.videoId === item.videoId && offlineDownload.status === 'downloading';
                   const isDownloadError = offlineDownload.videoId === item.videoId && offlineDownload.status === 'error';
                   const anotherDownloadIsActive = offlineDownload.status === 'downloading' && offlineDownload.videoId !== item.videoId;
@@ -1664,7 +1960,25 @@ export default function App() {
                       className="min-w-[260px] md:min-w-[300px] snap-start bg-black/35 border border-white/10 rounded-2xl overflow-hidden group hover:border-blue-400/30 transition-colors"
                     >
                       <button
-                        onClick={() => startPractice(item.videoId, item.url, item.phraseIndex, item.title, item.channel, item.theme)}
+                        onClick={() => commercialCloudMode
+                          ? startCommercialPractice({
+                              id: item.contentId || item.videoId,
+                              slug: item.contentSlug || '',
+                              title: item.title,
+                              description: '',
+                              creator: item.channel || '',
+                              sourceCountry: null,
+                              primaryLanguage: 'en',
+                              difficulty: 'intermediate',
+                              theme: item.theme || '',
+                              durationSeconds: 0,
+                              publishedAt: null,
+                              artworkUrl: item.thumbnail,
+                              offlineAvailable: false,
+                              rights: null,
+                              lesson: item.lessonId ? { id: item.lessonId, title: item.title, version: 1, segmentCount: item.phraseCount } : null,
+                            }, item.phraseIndex)
+                          : startPractice(item.videoId, item.url, item.phraseIndex, item.title, item.channel, item.theme)}
                         className="w-full text-left"
                       >
                         <div className="flex gap-3 p-3">
@@ -1694,26 +2008,28 @@ export default function App() {
                       <div className="px-3 py-2 border-t border-white/5 flex justify-between items-center">
                         <span className="text-[11px] text-gray-500 uppercase tracking-wider">{progress}% concluído</span>
                         <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => startOfflineDownload(item.videoId, item.url)}
-                            disabled={isOffline || isDownloading || anotherDownloadIsActive}
-                            className={`px-2 py-1 rounded-lg text-[11px] transition-colors inline-flex items-center gap-1 ${
-                              isOffline
-                                ? 'text-emerald-300 bg-emerald-500/10'
-                                : isDownloadError
-                                  ? 'text-red-300 hover:bg-red-500/10'
-                                  : 'text-blue-200 hover:bg-blue-500/10 disabled:opacity-40'
-                            }`}
-                            title={isOffline ? 'Vídeo e legenda prontos para uso offline' : 'Baixar vídeo e legenda'}
-                          >
-                            {isOffline ? (
-                              <><CheckCircle2 size={13} /> Offline</>
-                            ) : isDownloading ? (
-                              <><Loader2 size={13} className="animate-spin" /> {offlineDownload.progress ? `${offlineDownload.progress}%` : 'Baixando'}</>
-                            ) : (
-                              <><Download size={13} /> {isDownloadError ? 'Tentar' : 'Baixar'}</>
-                            )}
-                          </button>
+                          {!item.contentSlug && (
+                            <button
+                              onClick={() => startOfflineDownload(item.videoId, item.url)}
+                              disabled={isOffline || isDownloading || anotherDownloadIsActive}
+                              className={`px-2 py-1 rounded-lg text-[11px] transition-colors inline-flex items-center gap-1 ${
+                                isOffline
+                                  ? 'text-emerald-300 bg-emerald-500/10'
+                                  : isDownloadError
+                                    ? 'text-red-300 hover:bg-red-500/10'
+                                    : 'text-blue-200 hover:bg-blue-500/10 disabled:opacity-40'
+                              }`}
+                              title={isOffline ? 'Vídeo e legenda prontos para uso offline' : 'Baixar vídeo e legenda'}
+                            >
+                              {isOffline ? (
+                                <><CheckCircle2 size={13} /> Offline</>
+                              ) : isDownloading ? (
+                                <><Loader2 size={13} className="animate-spin" /> {offlineDownload.progress ? `${offlineDownload.progress}%` : 'Baixando'}</>
+                              ) : (
+                                <><Download size={13} /> {isDownloadError ? 'Tentar' : 'Baixar'}</>
+                              )}
+                            </button>
+                          )}
                           <button
                             onClick={() => handleFindSimilarVideos(item)}
                             className="px-2 py-1 rounded-lg text-[11px] text-blue-200 hover:bg-blue-500/10 transition-colors"
@@ -1747,7 +2063,7 @@ export default function App() {
             </section>
           )}
 
-          <div className="w-full grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 md:gap-8 mb-12 md:mb-16">
+          <div className={`w-full grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-8 mb-12 md:mb-16 ${commercialCloudMode ? 'xl:grid-cols-2' : 'xl:grid-cols-3'}`}>
             {/* SEÇÃO A - IA CURATION */}
             <div className="md:col-span-2 glass-input rounded-[2rem] p-6 md:p-10 shadow-2xl relative overflow-hidden group">
               <div className="absolute top-0 right-0 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none" />
@@ -1829,7 +2145,9 @@ export default function App() {
                       {recommendations.map(video => (
                         <div 
                           key={video.id} 
-                          onClick={() => startPractice(video.id, `https://youtube.com/watch?v=${video.id}`, 0, video.title, video.channel, selectedTheme)}
+                          onClick={() => commercialCloudMode
+                            ? startCommercialPractice(video.commercialContent)
+                            : startPractice(video.id, `https://youtube.com/watch?v=${video.id}`, 0, video.title, video.channel, selectedTheme)}
                           className="min-w-[240px] md:min-w-0 snap-center shrink-0 group bg-black/40 border border-white/10 rounded-2xl overflow-hidden cursor-pointer transition-all duration-500 hover:-translate-y-2 hover:shadow-2xl hover:shadow-blue-500/20 hover:border-white/20"
                         >
                           <div className="aspect-video relative overflow-hidden bg-gray-900">
@@ -1853,6 +2171,7 @@ export default function App() {
               </div>
             </div>
 
+            {!commercialCloudMode && <>
             {/* SEÇÃO B - COLA DIRETA */}
             <div className="md:col-span-2 relative xl:hidden">
                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -1931,6 +2250,7 @@ export default function App() {
                  </div>
                )}
             </div>
+            </>}
 
           </div>
         </main>
@@ -1952,7 +2272,7 @@ export default function App() {
           <ArrowLeft size={18} className="mr-2" /> Voltar para a Descoberta
         </button>
 
-        {offlineVideoIds.has(videoId) && (
+        {offlineVideoIds.has(videoId) && !currentContentSlug && (
           <div className="absolute left-1/2 -translate-x-1/2 hidden md:flex items-center gap-2 rounded-full bg-emerald-500/10 border border-emerald-400/20 px-3 py-2 text-xs font-medium text-emerald-200">
             <CheckCircle2 size={15} /> Pronto offline
           </div>
@@ -1961,14 +2281,21 @@ export default function App() {
         <div className="flex items-center gap-2">
           {desktopSettingsButton}
           {user ? (
-            <button
-              onClick={handleLogout}
-              className="glass-input p-2 md:px-4 md:py-2.5 rounded-full flex items-center justify-center text-gray-400 hover:text-white hover:bg-white/10 transition-colors shrink-0 text-sm"
-              title={`Sair (${user.email})`}
-            >
-              <LogOut size={18} className="md:w-5 md:h-5 md:mr-2" />
-              <span className="hidden md:inline">{user.name}</span>
-            </button>
+            <>
+              <button
+                onClick={handleLogout}
+                className="glass-input p-2 md:px-4 md:py-2.5 rounded-full flex items-center justify-center text-gray-400 hover:text-white hover:bg-white/10 transition-colors shrink-0 text-sm"
+                title={`Sair (${user.email})`}
+              >
+                <LogOut size={18} className="md:w-5 md:h-5 md:mr-2" />
+                <span className="hidden md:inline">{user.name}</span>
+              </button>
+              {commercialCloudMode && (
+                <button onClick={handleDeleteAccount} className="glass-input p-2 rounded-full text-gray-500 hover:text-red-300" title="Excluir conta" aria-label="Excluir conta">
+                  <Trash2 size={17} />
+                </button>
+              )}
+            </>
           ) : (
             <button
               onClick={() => openAuth('login')}
@@ -1988,7 +2315,9 @@ export default function App() {
           {playerCrashed ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 p-6 text-center">
               <p className="text-sm md:text-base text-gray-200 mb-4">
-                O player do YouTube travou ao carregar este vídeo.
+                {commercialCloudMode
+                  ? 'Não foi possível carregar a mídia desta aula.'
+                  : 'O player do YouTube travou ao carregar este vídeo.'}
               </p>
               <button
                 onClick={() => {
@@ -2004,17 +2333,21 @@ export default function App() {
             <video
               key={`offline-${videoId}-${playerInstanceKey}`}
               ref={localVideoRef}
-              src={isNativeIOS() ? nativeVideoPaths[videoId] : `/offline-library/${videoId}/video.mp4`}
+              src={nativeVideoPaths[videoId] || (isNativeIOS() ? '' : `/offline-library/${videoId}/video.mp4`)}
               controls
               playsInline
               preload={isNativeIOS() ? 'metadata' : 'none'}
-              poster={`https://img.youtube.com/vi/${videoId}/hqdefault.jpg`}
+              poster={currentVideoArtwork || (commercialCloudMode ? '' : `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`)}
               onLoadedMetadata={onLocalPlayerReady}
               onPlay={() => setHasStartedPlaying(true)}
               onPause={onPlayerPause}
               onError={() => setPlayerCrashed(true)}
               className="absolute inset-0 w-full h-full bg-black object-contain"
             />
+          ) : commercialCloudMode ? (
+            <div className="absolute inset-0 flex items-center justify-center bg-black px-6 text-center text-sm text-gray-400">
+              A mídia privada desta aula ainda não foi liberada.
+            </div>
           ) : isNativeIOS() ? (
             <div
               ref={nativePlayerContainerRef}
@@ -2127,7 +2460,7 @@ export default function App() {
                                 return;
                               }
                               
-                              const res = await fetch("/api/enrichManualTranscript", {
+                              const res = await appApiFetch("/api/enrichManualTranscript", {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({ transcriptData }),
@@ -2178,7 +2511,7 @@ export default function App() {
                                    return;
                                  }
                                  
-                                 const res = await fetch("/api/enrichManualTranscript", {
+                                 const res = await appApiFetch("/api/enrichManualTranscript", {
                                    method: "POST",
                                    headers: { "Content-Type": "application/json" },
                                    body: JSON.stringify({ transcriptData }),

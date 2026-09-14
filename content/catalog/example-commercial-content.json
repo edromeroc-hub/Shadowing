@@ -1,0 +1,62 @@
+{
+  "legalReviewConfirmed": false,
+  "slug": "example-public-domain-lesson",
+  "title": "Example Public Domain Lesson",
+  "description": "Replace this example with a rights-cleared English-language lesson.",
+  "creator": "Example archive",
+  "sourceCountry": "US",
+  "primaryLanguage": "en",
+  "difficulty": "intermediate",
+  "theme": "Cinema e Séries",
+  "durationSeconds": 8.5,
+  "rights": {
+    "basis": "public_domain",
+    "rightsHolder": "Public domain / institution responsible for the source record",
+    "rightsContact": "rights@example.com",
+    "sourceUrl": "https://example.com/original-source-record",
+    "licenseName": "Public domain candidate — legal review required",
+    "licenseUrl": "https://example.com/rights-record",
+    "attributionText": "Source and attribution text go here.",
+    "evidence": "../raw/example/rights-evidence.pdf",
+    "notes": "Document why commercial distribution is permitted in every listed territory.",
+    "allowedTerritories": ["US"],
+    "derivativeWorks": true,
+    "streamingAllowed": true,
+    "offlineDownloadAllowed": false,
+    "translationAllowed": true
+  },
+  "assets": {
+    "video": {
+      "file": "../raw/example/video.mp4",
+      "mimeType": "video/mp4"
+    },
+    "artwork": {
+      "file": "../raw/example/artwork.jpg",
+      "mimeType": "image/jpeg"
+    },
+    "captions": {
+      "file": "../raw/example/captions.vtt",
+      "mimeType": "text/vtt",
+      "languageCode": "en"
+    }
+  },
+  "lesson": {
+    "title": "Example shadowing lesson",
+    "version": 1,
+    "promptVersion": "shadowing-v1",
+    "segments": [
+      {
+        "start": 0.25,
+        "end": 3.8,
+        "text": "This is an example sentence for shadowing practice.",
+        "translation": "Esta é uma frase de exemplo para praticar shadowing."
+      },
+      {
+        "start": 4.1,
+        "end": 8.2,
+        "text": "Replace it with text reviewed against the licensed media.",
+        "translation": "Substitua pelo texto revisado de acordo com a mídia licenciada."
+      }
+    ]
+  }
+}
