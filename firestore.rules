@@ -1,0 +1,19 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Assumed data model:
+    // profiles/{uid}: private profile and country.
+    // contentItems/{contentId}: catalog metadata, rights and storage paths.
+    // lessons/{lessonId}: reviewed shadowing segments.
+    // progress/{uid_contentId}: private learning progress.
+    // entitlements/{uid}: server-managed plan and AI quota.
+    // aiUsage/{requestId}: server-managed AI audit records.
+    //
+    // Backend-first architecture: the commercial client performs no direct
+    // Firestore reads or writes. Firebase Admin SDK access is evaluated by the
+    // authenticated API and is not controlled by client Security Rules.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

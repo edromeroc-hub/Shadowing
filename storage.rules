@@ -1,0 +1,10 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // All commercial media and legal evidence is private. The client receives
+    // only short-lived URLs issued by the authenticated backend.
+    match /{object=**} {
+      allow read, write: if false;
+    }
+  }
+}

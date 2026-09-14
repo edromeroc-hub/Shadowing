@@ -34,7 +34,16 @@ import {
   type CommercialProgress,
   type CommercialSegment,
 } from './lib/commercialApi';
-import { mapSupabaseUser, supabase, supabaseConfigured, type AppUser } from './lib/supabase';
+import {
+  createFirebaseAccount,
+  firebaseAuth,
+  firebaseAuthConfigured,
+  mapFirebaseUser,
+  observeFirebaseAuth,
+  signInFirebase,
+  signOutFirebase,
+  type AppUser,
+} from './lib/firebase';
 
 const THEMES = ['Viagem e Cultura', 'Tecnologia', 'Negócios/Trabalho', 'Cinema e Séries', 'Notícias e Debates'];
 const DIFFICULTIES = [
@@ -208,26 +217,35 @@ export default function CommercialApp() {
   };
 
   useEffect(() => {
-    if (!supabase) {
+    if (!firebaseAuth) {
       setAuthReady(true);
       return;
     }
     let disposed = false;
-    void supabase.auth.getSession().then(({ data }) => {
+    const readinessTimeout = window.setTimeout(() => {
       if (!disposed) {
-        setUser(data.session?.user ? mapSupabaseUser(data.session.user) : null);
+        setUser(firebaseAuth.currentUser ? mapFirebaseUser(firebaseAuth.currentUser) : null);
+        setAuthReady(true);
+      }
+    }, 2500);
+    void firebaseAuth.authStateReady().then(() => {
+      if (!disposed) {
+        window.clearTimeout(readinessTimeout);
+        setUser(firebaseAuth.currentUser ? mapFirebaseUser(firebaseAuth.currentUser) : null);
         setAuthReady(true);
       }
     });
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+    const unsubscribe = observeFirebaseAuth((nextUser) => {
       if (!disposed) {
-        setUser(session?.user ? mapSupabaseUser(session.user) : null);
+        window.clearTimeout(readinessTimeout);
+        setUser(nextUser ? mapFirebaseUser(nextUser) : null);
         setAuthReady(true);
       }
     });
     return () => {
       disposed = true;
-      data.subscription.unsubscribe();
+      window.clearTimeout(readinessTimeout);
+      unsubscribe();
     };
   }, []);
 
@@ -323,7 +341,7 @@ export default function CommercialApp() {
 
   const submitAuth = async (event: FormEvent) => {
     event.preventDefault();
-    if (!supabase) return;
+    if (!firebaseAuth) return;
     const email = authEmail.trim().toLowerCase();
     const password = authPassword.trim();
     const displayName = authName.trim() || email.split('@')[0] || 'Aluno';
@@ -336,19 +354,9 @@ export default function CommercialApp() {
     setAuthMessage('');
     try {
       if (authMode === 'signup') {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: { data: { display_name: displayName, country_code: 'BR' } },
-        });
-        if (error) throw error;
-        if (!data.session) {
-          setAuthMessage('Conta criada. Confirme o e-mail recebido para entrar.');
-          return;
-        }
+        await createFirebaseAccount(email, password, displayName);
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
+        await signInFirebase(email, password);
       }
       setAuthOpen(false);
       setAuthPassword('');
@@ -360,7 +368,7 @@ export default function CommercialApp() {
   };
 
   const logout = async () => {
-    await supabase?.auth.signOut();
+    await signOutFirebase();
     setScreen('catalog');
     setCurrentContent(null);
     setMediaUrl('');
@@ -370,7 +378,7 @@ export default function CommercialApp() {
     if (!window.confirm('Excluir permanentemente sua conta e todo o progresso? Esta ação não pode ser desfeita.')) return;
     try {
       await deleteCommercialAccount();
-      await supabase?.auth.signOut();
+      await signOutFirebase();
       setScreen('catalog');
     } catch (error: any) {
       alert(error.message || 'Não foi possível excluir sua conta.');
@@ -582,12 +590,12 @@ export default function CommercialApp() {
     return <div className="bg-atmosphere flex min-h-screen items-center justify-center"><Loader2 className="animate-spin text-blue-300" size={36} /></div>;
   }
 
-  if (!supabaseConfigured) {
+  if (!firebaseAuthConfigured) {
     return (
       <div className="bg-atmosphere flex min-h-screen items-center justify-center px-6 text-white">
         <div className="glass-input max-w-xl rounded-3xl p-8 text-center">
           <h1 className="font-serif text-4xl font-semibold">Backend comercial não configurado</h1>
-          <p className="mt-4 text-gray-400">Configure `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY` e `VITE_API_URL` antes de gerar o aplicativo.</p>
+          <p className="mt-4 text-gray-400">Configure as variáveis públicas `VITE_FIREBASE_*` e `VITE_API_URL` antes de gerar o aplicativo.</p>
         </div>
       </div>
     );

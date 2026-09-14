@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { firebaseAuth } from './firebase';
 
 const apiBaseUrl = String(import.meta.env.VITE_API_URL || import.meta.env.VITE_SHADOWING_API_URL || '')
   .trim()
@@ -55,10 +55,9 @@ export type CommercialProgress = {
 };
 
 export async function commercialAuthorizedFetch(path: string, init: RequestInit = {}) {
-  if (!supabase) throw new Error('O login comercial ainda não foi configurado.');
-  const { data, error } = await supabase.auth.getSession();
-  if (error) throw error;
-  const token = data.session?.access_token;
+  if (!firebaseAuth) throw new Error('O login comercial ainda não foi configurado.');
+  await firebaseAuth.authStateReady();
+  const token = await firebaseAuth.currentUser?.getIdToken();
   if (!token) throw new Error('Faça login para continuar.');
 
   const headers = new Headers(init.headers);

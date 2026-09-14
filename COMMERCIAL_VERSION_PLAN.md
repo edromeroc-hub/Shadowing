@@ -36,14 +36,14 @@ O app comercial remove ou desativa:
 
 - Catálogo editorial de aulas.
 - Reprodução online por HLS e opção offline autorizada.
-- Autenticação real por Sign in with Apple e/ou e-mail.
+- Autenticação real por Firebase Auth com e-mail e futura opção Sign in with Apple.
 - Progresso sincronizado por usuário.
 - Assinatura e limites definidos no servidor.
 - Nenhuma chave de IA dentro do IPA.
 
 ### API e banco
 
-- Postgres/Supabase para usuários, catálogo, progresso, assinaturas e registro de direitos.
+- Firestore para usuários, catálogo, progresso, assinaturas e registro de direitos.
 - API autenticada para entregar metadados, legendas, segmentos e URLs temporárias.
 - Chaves de IA somente no backend.
 - Controle de quota por usuário, recurso e período.
@@ -51,7 +51,7 @@ O app comercial remove ou desativa:
 ### Mídia
 
 - Arquivos originais enviados pelo titular ou obtidos de fonte com licença verificável.
-- Object storage compatível com S3, como Cloudflare R2 ou AWS S3.
+- Cloud Storage for Firebase privado para mídia e evidências.
 - CDN para HLS, miniaturas, áudio e WebVTT.
 - URLs assinadas com validade curta para reduzir redistribuição.
 - Pacote offline criptografado ou protegido pelo armazenamento privado do app.
@@ -107,19 +107,21 @@ O app comercial remove ou desativa:
 - criar um `ContentProvider` para separar player e origem da mídia;
 - [x] consumir catálogo privado pela API comercial;
 - [x] adicionar tela de créditos e licenças por aula;
-- [x] trocar login local por Supabase Auth e adicionar exclusão de conta;
+- [x] trocar login local por Firebase Auth e adicionar exclusão de conta;
 - [x] concluir telas internas de créditos, privacidade e termos;
 - [ ] publicar URLs jurídicas revisadas para produção.
 
 ### Fase 2 — backend comercial
 
-- [x] autenticação, banco e RLS;
-- [x] storage privado para mídia, arte e evidências;
+- [x] Firebase Authentication, Firestore e regras `default deny`;
+- [x] implementar storage privado, regras e URLs assinadas;
 - [x] API autenticada de catálogo e progresso;
 - [x] registro auditável de direitos e territórios;
 - [x] URLs assinadas e controle de acesso;
 - [x] limite mensal e auditoria de uso da IA;
-- [ ] provisionar e validar o projeto Supabase de produção (bloqueado pelo limite de projetos ativos do plano gratuito).
+- [x] provisionar Firebase Auth, Firestore e Hosting de produção;
+- [ ] ativar Blaze e provisionar o bucket do Cloud Storage;
+- [ ] publicar e validar API, Storage e Hosting juntos.
 
 ### Fase 3 — estúdio editorial
 

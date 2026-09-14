@@ -1,51 +1,66 @@
 import { randomUUID } from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
-import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
+import { applicationDefault, getApps, initializeApp } from 'firebase-admin/app';
+import { getAuth, type DecodedIdToken } from 'firebase-admin/auth';
+import {
+  FieldValue,
+  Timestamp,
+  getFirestore,
+  type Firestore,
+  type Query,
+} from 'firebase-admin/firestore';
+import { getStorage } from 'firebase-admin/storage';
 
-type CommercialRequest = Request & {
-  commercialUser?: User;
-};
+type StorageBucket = ReturnType<ReturnType<typeof getStorage>['bucket']>;
+
+type CommercialRequest = Request & { commercialUser?: DecodedIdToken };
+type CommercialHandler = (
+  req: CommercialRequest,
+  res: Response,
+  next: NextFunction,
+) => Promise<unknown>;
 
 type ContentRights = {
-  basis: string;
-  status: string;
-  rights_holder: string;
-  source_url: string;
-  license_name: string | null;
-  license_url: string | null;
-  attribution_text: string | null;
-  commercial_use: boolean;
-  streaming_allowed: boolean;
-  offline_download_allowed: boolean;
-  allowed_territories: string[] | null;
-  valid_from: string | null;
-  valid_through: string | null;
+  basis: 'owned' | 'licensed' | 'public_domain' | 'open_license';
+  status: 'pending' | 'approved' | 'rejected' | 'expired';
+  rightsHolder: string;
+  sourceUrl: string;
+  licenseName: string | null;
+  licenseUrl: string | null;
+  attributionText: string | null;
+  commercialUse: boolean;
+  streamingAllowed: boolean;
+  offlineDownloadAllowed: boolean;
+  translationAllowed: boolean;
+  allowedTerritories: string[];
+  validFrom: string | null;
+  validThrough: string | null;
 };
 
 type ContentAsset = {
-  id: string;
-  kind: string;
-  storage_bucket: string;
-  storage_path: string;
-  language_code: string | null;
-  mime_type: string;
+  kind: 'video' | 'audio' | 'captions' | 'transcript' | 'artwork';
+  storagePath: string;
+  languageCode: string | null;
+  mimeType: string;
+  sizeBytes?: number;
 };
 
 type LessonSegment = {
   id: string;
   position: number;
-  start_seconds: number | string;
-  end_seconds: number | string;
+  start: number;
+  end: number;
   text: string;
   translation: string;
 };
 
-type Lesson = {
+type LessonRecord = {
   id: string;
+  contentId: string;
   title: string;
   version: number;
-  status: string;
-  lesson_segments: LessonSegment[] | null;
+  status: 'draft' | 'review' | 'published' | 'archived';
+  segments: LessonSegment[];
 };
 
 type ContentRecord = {
@@ -54,17 +69,38 @@ type ContentRecord = {
   title: string;
   description: string;
   creator: string;
-  source_country: string | null;
-  primary_language: string;
-  difficulty: string;
+  sourceCountry: string | null;
+  primaryLanguage: string;
+  difficulty: 'beginner' | 'intermediate' | 'advanced';
   theme: string;
-  duration_seconds: number | string;
-  artwork_path: string | null;
-  published_at: string | null;
-  content_rights: ContentRights | ContentRights[] | null;
-  content_assets: ContentAsset[] | null;
-  lessons: Lesson[] | null;
+  durationSeconds: number;
+  status: 'draft' | 'review' | 'published' | 'archived';
+  publishedAt: Timestamp | string | Date | null;
+  publishedLessonId: string | null;
+  rights: ContentRights;
+  assets: ContentAsset[];
 };
+
+type FirebaseServices = {
+  db: Firestore;
+  bucket: StorageBucket;
+  auth: ReturnType<typeof getAuth>;
+};
+
+class HttpError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function asyncRoute(handler: CommercialHandler) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    void handler(req as CommercialRequest, res, next).catch(next);
+  };
+}
 
 function readBoolean(value: string | undefined, fallback = false) {
   if (value == null || value.trim() === '') return fallback;
@@ -85,78 +121,87 @@ function isUuid(value: unknown): value is string {
     && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
-function singleRelation<T>(value: T | T[] | null | undefined): T | null {
-  if (Array.isArray(value)) return value[0] || null;
-  return value || null;
+function asIsoString(value: unknown) {
+  if (!value) return null;
+  if (value instanceof Timestamp) return value.toDate().toISOString();
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
 }
 
 function dateIsActive(rights: ContentRights) {
   const today = new Date().toISOString().slice(0, 10);
-  return (!rights.valid_from || rights.valid_from <= today)
-    && (!rights.valid_through || rights.valid_through >= today);
+  return (!rights.validFrom || rights.validFrom <= today)
+    && (!rights.validThrough || rights.validThrough >= today);
 }
 
 function territoryIsAllowed(rights: ContentRights, countryCode: string | null) {
-  const territories = rights.allowed_territories || [];
-  if (territories.length === 0) return false;
-  return Boolean(countryCode && territories.includes(countryCode.toUpperCase()));
+  if (!rights.allowedTerritories?.length) return false;
+  return Boolean(countryCode && rights.allowedTerritories.includes(countryCode.toUpperCase()));
 }
 
 function contentIsAvailable(content: ContentRecord, countryCode: string | null) {
-  const rights = singleRelation(content.content_rights);
+  const rights = content.rights;
   return Boolean(
-    rights
+    content.status === 'published'
+      && rights
       && rights.status === 'approved'
-      && rights.commercial_use
-      && rights.streaming_allowed
+      && rights.commercialUse
+      && rights.streamingAllowed
       && dateIsActive(rights)
       && territoryIsAllowed(rights, countryCode),
   );
 }
 
-function createServerClient(url: string, key: string) {
-  return createClient(url, key, {
-    auth: {
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-      persistSession: false,
-    },
+function createFirebaseServices(): FirebaseServices | null {
+  const projectId = String(
+    process.env.FIREBASE_PROJECT_ID
+      || process.env.GCLOUD_PROJECT
+      || process.env.GOOGLE_CLOUD_PROJECT
+      || '',
+  ).trim();
+  const storageBucket = String(
+    process.env.FIREBASE_STORAGE_BUCKET
+      || (projectId ? `${projectId}.firebasestorage.app` : ''),
+  ).trim();
+  if (!projectId || !storageBucket) return null;
+
+  const app = getApps()[0] || initializeApp({
+    credential: applicationDefault(),
+    projectId,
+    storageBucket,
   });
+  return {
+    db: getFirestore(app),
+    bucket: getStorage(app).bucket(storageBucket),
+    auth: getAuth(app),
+  };
 }
 
-async function signAsset(client: SupabaseClient, asset: ContentAsset | null, expiresIn = 3600) {
+async function signAsset(bucket: StorageBucket, asset: ContentAsset | null, expiresIn = 3600) {
   if (!asset) return null;
-  const { data, error } = await client.storage
-    .from(asset.storage_bucket)
-    .createSignedUrl(asset.storage_path, expiresIn);
-  if (error) throw error;
-  return data.signedUrl;
+  const [url] = await bucket.file(asset.storagePath).getSignedUrl({
+    action: 'read',
+    expires: Date.now() + expiresIn * 1000,
+  });
+  return url;
 }
 
-function pickPublishedLesson(content: ContentRecord) {
-  return [...(content.lessons || [])]
-    .filter((lesson) => lesson.status === 'published')
-    .sort((left, right) => right.version - left.version)[0] || null;
+async function loadLesson(db: Firestore, content: ContentRecord) {
+  if (!content.publishedLessonId) return null;
+  const snapshot = await db.collection('lessons').doc(content.publishedLessonId).get();
+  if (!snapshot.exists) return null;
+  const lesson = { id: snapshot.id, ...snapshot.data() } as LessonRecord;
+  return lesson.status === 'published' ? lesson : null;
 }
 
-async function serializeContent(client: SupabaseClient, content: ContentRecord, includeLesson: boolean) {
-  const assets = content.content_assets || [];
-  const artworkAsset = assets.find((asset) => asset.kind === 'artwork') || null;
-  const lesson = pickPublishedLesson(content);
-  const segments = [...(lesson?.lesson_segments || [])]
-    .sort((left, right) => left.position - right.position)
-    .map((segment) => ({
-      id: segment.id,
-      position: segment.position,
-      start: Number(segment.start_seconds),
-      end: Number(segment.end_seconds),
-      text: segment.text,
-      translation: segment.translation,
-    }));
+async function serializeContent(services: FirebaseServices, content: ContentRecord, includeLesson: boolean) {
+  const artworkAsset = content.assets?.find((asset) => asset.kind === 'artwork') || null;
+  const lesson = await loadLesson(services.db, content);
+  const segments = [...(lesson?.segments || [])].sort((left, right) => left.position - right.position);
 
   let artworkUrl: string | null = null;
   try {
-    artworkUrl = await signAsset(client, artworkAsset, 6 * 60 * 60);
+    artworkUrl = await signAsset(services.bucket, artworkAsset, 6 * 60 * 60);
   } catch (error) {
     console.warn(`[commercial] artwork unavailable for ${content.slug}`, error);
   }
@@ -167,27 +212,24 @@ async function serializeContent(client: SupabaseClient, content: ContentRecord, 
     title: content.title,
     description: content.description,
     creator: content.creator,
-    sourceCountry: content.source_country,
-    primaryLanguage: content.primary_language,
+    sourceCountry: content.sourceCountry,
+    primaryLanguage: content.primaryLanguage,
     difficulty: content.difficulty,
     theme: content.theme,
-    durationSeconds: Number(content.duration_seconds),
-    publishedAt: content.published_at,
+    durationSeconds: Number(content.durationSeconds),
+    publishedAt: asIsoString(content.publishedAt),
     artworkUrl,
-    offlineAvailable: Boolean(singleRelation(content.content_rights)?.offline_download_allowed),
-    rights: (() => {
-      const rights = singleRelation(content.content_rights);
-      return rights
-        ? {
-            basis: rights.basis,
-            rightsHolder: rights.rights_holder,
-            sourceUrl: rights.source_url,
-            licenseName: rights.license_name,
-            licenseUrl: rights.license_url,
-            attributionText: rights.attribution_text,
-          }
-        : null;
-    })(),
+    offlineAvailable: Boolean(content.rights?.offlineDownloadAllowed),
+    rights: content.rights
+      ? {
+          basis: content.rights.basis,
+          rightsHolder: content.rights.rightsHolder,
+          sourceUrl: content.rights.sourceUrl,
+          licenseName: content.rights.licenseName,
+          licenseUrl: content.rights.licenseUrl,
+          attributionText: content.rights.attributionText,
+        }
+      : null,
     lesson: lesson
       ? {
           id: lesson.id,
@@ -200,34 +242,22 @@ async function serializeContent(client: SupabaseClient, content: ContentRecord, 
   };
 }
 
-const CONTENT_SELECT = `
-  id,
-  slug,
-  title,
-  description,
-  creator,
-  source_country,
-  primary_language,
-  difficulty,
-  theme,
-  duration_seconds,
-  artwork_path,
-  published_at,
-  content_rights!inner(basis, status, rights_holder, source_url, license_name, license_url, attribution_text, commercial_use, streaming_allowed, offline_download_allowed, allowed_territories, valid_from, valid_through),
-  content_assets(id, kind, storage_bucket, storage_path, language_code, mime_type),
-  lessons(id, title, version, status, lesson_segments(id, position, start_seconds, end_seconds, text, translation))
-`;
+async function deleteQuery(db: Firestore, query: Query) {
+  let snapshot = await query.limit(400).get();
+  while (!snapshot.empty) {
+    const batch = db.batch();
+    snapshot.docs.forEach((document) => batch.delete(document.ref));
+    await batch.commit();
+    snapshot = await query.limit(400).get();
+  }
+}
 
 export function createCommercialBackend() {
   const router = express.Router();
   const allowedOrigins = parseAllowedOrigins();
   const cloudMode = readBoolean(process.env.COMMERCIAL_CLOUD_MODE, false);
-  const supabaseUrl = String(process.env.SUPABASE_URL || '').trim();
-  const publishableKey = String(process.env.SUPABASE_PUBLISHABLE_KEY || '').trim();
-  const secretKey = String(process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
-  const configured = Boolean(supabaseUrl && publishableKey && secretKey);
-  const authClient = configured ? createServerClient(supabaseUrl, publishableKey) : null;
-  const adminClient = configured ? createServerClient(supabaseUrl, secretKey) : null;
+  const services = createFirebaseServices();
+  const configured = Boolean(services);
 
   router.use((req, res, next) => {
     const origin = req.headers.origin;
@@ -235,268 +265,309 @@ export function createCommercialBackend() {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     }
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     return next();
   });
 
-  const requireAuth = async (req: CommercialRequest, res: Response, next: NextFunction) => {
-    if (!configured || !authClient) {
-      return res.status(503).json({ error: 'O backend comercial ainda não foi configurado.' });
+  const ensureUserDocuments = async (user: DecodedIdToken) => {
+    if (!services) return;
+    const profileRef = services.db.collection('profiles').doc(user.uid);
+    const entitlementRef = services.db.collection('entitlements').doc(user.uid);
+    const [profile, entitlement] = await Promise.all([profileRef.get(), entitlementRef.get()]);
+    const batch = services.db.batch();
+    if (!profile.exists) {
+      batch.set(profileRef, {
+        displayName: user.name || user.email?.split('@')[0] || 'Aluno',
+        preferredLocale: 'pt-BR',
+        countryCode: 'BR',
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
     }
+    if (!entitlement.exists) {
+      const now = new Date();
+      const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+      batch.set(entitlementRef, {
+        plan: 'free',
+        status: 'active',
+        aiMonthlyLimit: 20,
+        aiUsedThisPeriod: 0,
+        currentPeriodStart: Timestamp.fromDate(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))),
+        currentPeriodEnd: Timestamp.fromDate(periodEnd),
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+    if (!profile.exists || !entitlement.exists) await batch.commit();
+  };
 
+  const requireAuth = async (req: CommercialRequest, res: Response, next: NextFunction) => {
+    if (!services) return res.status(503).json({ error: 'O backend Firebase ainda não foi configurado.' });
     const authorization = String(req.headers.authorization || '');
     const token = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : '';
     if (!token) return res.status(401).json({ error: 'Faça login para continuar.' });
-
-    const { data, error } = await authClient.auth.getUser(token);
-    if (error || !data.user) return res.status(401).json({ error: 'Sua sessão expirou. Entre novamente.' });
-
-    req.commercialUser = data.user;
-    return next();
+    try {
+      const decoded = await services.auth.verifyIdToken(token, true);
+      await ensureUserDocuments(decoded);
+      req.commercialUser = decoded;
+      return next();
+    } catch {
+      return res.status(401).json({ error: 'Sua sessão expirou. Entre novamente.' });
+    }
   };
 
-  async function getCountryCode(userId: string) {
-    if (!adminClient) return null;
-    const { data } = await adminClient
-      .from('profiles')
-      .select('country_code')
-      .eq('id', userId)
-      .maybeSingle();
-    return data?.country_code ? String(data.country_code).toUpperCase() : null;
-  }
+  const consumeAiQuota = async (userId: string, feature: string) => {
+    if (!services) throw new HttpError(503, 'O backend Firebase ainda não foi configurado.');
+    const entitlementRef = services.db.collection('entitlements').doc(userId);
+    const usageRef = services.db.collection('aiUsage').doc(randomUUID());
+    await services.db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(entitlementRef);
+      if (!snapshot.exists) throw new HttpError(403, 'Seu plano ainda não foi ativado.');
+      const entitlement = snapshot.data()!;
+      if (!['active', 'trialing'].includes(String(entitlement.status))) {
+        throw new HttpError(403, 'Seu plano não está ativo.');
+      }
 
-  async function getContentBySlug(slug: string) {
-    if (!adminClient) return null;
-    const { data, error } = await adminClient
-      .from('content_items')
-      .select(CONTENT_SELECT)
-      .eq('slug', slug)
-      .eq('status', 'published')
-      .maybeSingle();
-    if (error) throw error;
-    return data as unknown as ContentRecord | null;
-  }
+      const now = new Date();
+      const existingEnd = entitlement.currentPeriodEnd instanceof Timestamp
+        ? entitlement.currentPeriodEnd.toDate()
+        : new Date(0);
+      const resetPeriod = existingEnd <= now;
+      const used = resetPeriod ? 0 : Number(entitlement.aiUsedThisPeriod || 0);
+      const limit = Number(entitlement.aiMonthlyLimit || 0);
+      if (used >= limit) throw new HttpError(429, 'Você atingiu o limite mensal de análises por IA.');
 
-  async function ensureContentAccess(userId: string, content: ContentRecord | null) {
-    if (!content) return false;
-    return contentIsAvailable(content, await getCountryCode(userId));
-  }
+      const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+      transaction.update(entitlementRef, {
+        aiUsedThisPeriod: used + 1,
+        ...(resetPeriod ? {
+          currentPeriodStart: Timestamp.fromDate(periodStart),
+          currentPeriodEnd: Timestamp.fromDate(periodEnd),
+        } : {}),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      transaction.set(usageRef, {
+        userId,
+        feature,
+        requestId: usageRef.id,
+        inputUnits: 0,
+        outputUnits: 0,
+        estimatedCostUsd: 0,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    });
+  };
 
   const protectAi = async (req: CommercialRequest, res: Response, next: NextFunction) => {
     if (!cloudMode) return next();
-
     return requireAuth(req, res, async () => {
-      if (!adminClient || !req.commercialUser) return;
-
-      const { data: entitlement, error } = await adminClient
-        .from('user_entitlements')
-        .select('plan, status, ai_monthly_limit, current_period_start, current_period_end')
-        .eq('user_id', req.commercialUser.id)
-        .maybeSingle();
-
-      if (error) return res.status(500).json({ error: 'Não foi possível validar seu plano.' });
-      if (!entitlement || !['active', 'trialing'].includes(entitlement.status)) {
-        return res.status(403).json({ error: 'Seu plano não está ativo.' });
+      try {
+        await consumeAiQuota(req.commercialUser!.uid, req.path || 'ai');
+        return next();
+      } catch (error) {
+        const status = error instanceof HttpError ? error.status : 500;
+        const message = error instanceof Error ? error.message : 'Não foi possível validar o uso da IA.';
+        return res.status(status).json({ error: message });
       }
-
-      const { count, error: countError } = await adminClient
-        .from('ai_usage_events')
-        .select('id', { count: 'exact', head: true })
-        .eq('user_id', req.commercialUser.id)
-        .gte('created_at', entitlement.current_period_start)
-        .lt('created_at', entitlement.current_period_end);
-
-      if (countError) return res.status(500).json({ error: 'Não foi possível validar seu limite de IA.' });
-      if ((count || 0) >= entitlement.ai_monthly_limit) {
-        return res.status(429).json({ error: 'Você atingiu o limite mensal de recursos com IA.' });
-      }
-
-      const { error: usageError } = await adminClient.from('ai_usage_events').insert({
-        user_id: req.commercialUser.id,
-        feature: req.path.replace(/^\//, '') || 'ai',
-        request_id: randomUUID(),
-      });
-      if (usageError) return res.status(500).json({ error: 'Não foi possível registrar o uso da IA.' });
-
-      return next();
     });
   };
 
+  const getProfileCountry = async (userId: string) => {
+    if (!services) return null;
+    const profile = await services.db.collection('profiles').doc(userId).get();
+    const value = profile.data()?.countryCode;
+    return typeof value === 'string' ? value.toUpperCase() : null;
+  };
+
+  const getContentBySlug = async (slug: string) => {
+    if (!services) return null;
+    const snapshot = await services.db.collection('contentItems').where('slug', '==', slug).limit(1).get();
+    const document = snapshot.docs[0];
+    return document ? ({ id: document.id, ...document.data() } as ContentRecord) : null;
+  };
+
+  const ensureContentAccess = async (userId: string, content: ContentRecord | null) => {
+    if (!content) return false;
+    return contentIsAvailable(content, await getProfileCountry(userId));
+  };
+
   router.get('/health', (_req, res) => {
-    res.json({ configured, cloudMode, service: 'shadowing-commercial-backend' });
+    res.json({ configured, cloudMode, provider: 'firebase', projectId: process.env.FIREBASE_PROJECT_ID || null });
   });
 
-  router.get('/me', requireAuth, async (req: CommercialRequest, res) => {
-    if (!adminClient || !req.commercialUser) return;
-    const [profileResult, entitlementResult] = await Promise.all([
-      adminClient.from('profiles').select('display_name, preferred_locale, country_code').eq('id', req.commercialUser.id).maybeSingle(),
-      adminClient.from('user_entitlements').select('plan, status, ai_monthly_limit, current_period_start, current_period_end').eq('user_id', req.commercialUser.id).maybeSingle(),
-    ]);
-    if (profileResult.error || entitlementResult.error) {
-      return res.status(500).json({ error: 'Não foi possível carregar sua conta.' });
-    }
+  router.get('/me', requireAuth, asyncRoute(async (req, res) => {
+    if (!services || !req.commercialUser) return;
+    const profile = await services.db.collection('profiles').doc(req.commercialUser.uid).get();
     return res.json({
-      id: req.commercialUser.id,
-      email: req.commercialUser.email,
-      profile: profileResult.data,
-      entitlement: entitlementResult.data,
+      id: req.commercialUser.uid,
+      email: req.commercialUser.email || '',
+      displayName: profile.data()?.displayName || req.commercialUser.name || 'Aluno',
+      preferredLocale: profile.data()?.preferredLocale || 'pt-BR',
+      countryCode: profile.data()?.countryCode || null,
     });
-  });
+  }));
 
-  router.put('/me', requireAuth, async (req: CommercialRequest, res) => {
-    if (!adminClient || !req.commercialUser) return;
+  router.put('/me', requireAuth, asyncRoute(async (req, res) => {
+    if (!services || !req.commercialUser) return;
     const displayName = String(req.body?.displayName || '').trim();
     const countryCode = String(req.body?.countryCode || '').trim().toUpperCase();
-    if (displayName.length < 2 || displayName.length > 80) {
-      return res.status(400).json({ error: 'Informe um nome entre 2 e 80 caracteres.' });
+    if (!displayName || displayName.length > 80 || !/^[A-Z]{2}$/.test(countryCode)) {
+      return res.status(400).json({ error: 'Nome ou país inválido.' });
     }
-    if (!/^[A-Z]{2}$/.test(countryCode)) {
-      return res.status(400).json({ error: 'País inválido.' });
-    }
-    const { data, error } = await adminClient
-      .from('profiles')
-      .update({ display_name: displayName, country_code: countryCode })
-      .eq('id', req.commercialUser.id)
-      .select('display_name, preferred_locale, country_code')
-      .single();
-    if (error) return res.status(500).json({ error: 'Não foi possível atualizar seu perfil.' });
-    return res.json(data);
-  });
+    await services.db.collection('profiles').doc(req.commercialUser.uid).set({
+      displayName,
+      countryCode,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return res.json({ displayName, preferredLocale: 'pt-BR', countryCode });
+  }));
 
-  router.delete('/me', requireAuth, async (req: CommercialRequest, res) => {
-    if (!adminClient || !req.commercialUser) return;
-    if (req.body?.confirm !== 'DELETE') {
-      return res.status(400).json({ error: 'Confirmação de exclusão inválida.' });
-    }
-    const { error } = await adminClient.auth.admin.deleteUser(req.commercialUser.id);
-    if (error) return res.status(500).json({ error: 'Não foi possível excluir sua conta.' });
+  router.delete('/me', requireAuth, asyncRoute(async (req, res) => {
+    if (!services || !req.commercialUser) return;
+    if (req.body?.confirm !== 'DELETE') return res.status(400).json({ error: 'Confirmação de exclusão inválida.' });
+    const userId = req.commercialUser.uid;
+    await Promise.all([
+      deleteQuery(services.db, services.db.collection('progress').where('userId', '==', userId)),
+      deleteQuery(services.db, services.db.collection('aiUsage').where('userId', '==', userId)),
+    ]);
+    await Promise.all([
+      services.db.collection('profiles').doc(userId).delete(),
+      services.db.collection('entitlements').doc(userId).delete(),
+    ]);
+    await services.auth.deleteUser(userId);
     return res.sendStatus(204);
-  });
+  }));
 
-  router.get('/catalog', requireAuth, async (req: CommercialRequest, res) => {
-    if (!adminClient || !req.commercialUser) return;
+  router.get('/catalog', requireAuth, asyncRoute(async (req, res) => {
+    if (!services || !req.commercialUser) return;
+    const snapshot = await services.db.collection('contentItems').where('status', '==', 'published').get();
     const theme = typeof req.query.theme === 'string' ? req.query.theme : null;
     const difficulty = typeof req.query.difficulty === 'string' ? req.query.difficulty : null;
-    let query = adminClient
-      .from('content_items')
-      .select(CONTENT_SELECT)
-      .eq('status', 'published')
-      .order('published_at', { ascending: false });
-    if (theme) query = query.eq('theme', theme);
-    if (difficulty) query = query.eq('difficulty', difficulty);
+    const countryCode = await getProfileCountry(req.commercialUser.uid);
+    const available = snapshot.docs
+      .map((document) => ({ id: document.id, ...document.data() } as ContentRecord))
+      .filter((content) => contentIsAvailable(content, countryCode))
+      .filter((content) => !theme || content.theme === theme)
+      .filter((content) => !difficulty || content.difficulty === difficulty)
+      .sort((left, right) => String(asIsoString(right.publishedAt)).localeCompare(String(asIsoString(left.publishedAt))));
+    return res.json(await Promise.all(available.map((content) => serializeContent(services, content, false))));
+  }));
 
-    const { data, error } = await query;
-    if (error) return res.status(500).json({ error: 'Não foi possível carregar o catálogo.' });
-
-    const countryCode = await getCountryCode(req.commercialUser.id);
-    const available = (data as unknown as ContentRecord[]).filter((content) => contentIsAvailable(content, countryCode));
-    return res.json(await Promise.all(available.map((content) => serializeContent(adminClient, content, false))));
-  });
-
-  router.get('/catalog/:slug', requireAuth, async (req: CommercialRequest, res) => {
-    if (!adminClient || !req.commercialUser) return;
+  router.get('/catalog/:slug', requireAuth, asyncRoute(async (req, res) => {
+    if (!services || !req.commercialUser) return;
     try {
       const content = await getContentBySlug(req.params.slug);
-      if (!await ensureContentAccess(req.commercialUser.id, content)) {
+      if (!await ensureContentAccess(req.commercialUser.uid, content)) {
         return res.status(404).json({ error: 'Conteúdo não encontrado ou indisponível em sua região.' });
       }
-      return res.json(await serializeContent(adminClient, content!, true));
+      return res.json(await serializeContent(services, content!, true));
     } catch (error) {
       console.error('[commercial] catalog detail failed', error);
       return res.status(500).json({ error: 'Não foi possível carregar esta aula.' });
     }
-  });
+  }));
 
-  router.get('/catalog/:slug/media', requireAuth, async (req: CommercialRequest, res) => {
-    if (!adminClient || !req.commercialUser) return;
+  router.get('/catalog/:slug/media', requireAuth, asyncRoute(async (req, res) => {
+    if (!services || !req.commercialUser) return;
     try {
       const content = await getContentBySlug(req.params.slug);
-      if (!await ensureContentAccess(req.commercialUser.id, content)) {
+      if (!await ensureContentAccess(req.commercialUser.uid, content)) {
         return res.status(404).json({ error: 'Conteúdo não encontrado ou indisponível em sua região.' });
       }
       const wantsOfflineDownload = req.query.download === '1';
-      const rights = singleRelation(content!.content_rights);
-      if (wantsOfflineDownload && !rights?.offline_download_allowed) {
+      if (wantsOfflineDownload && !content!.rights.offlineDownloadAllowed) {
         return res.status(403).json({ error: 'A licença deste conteúdo não permite download offline.' });
       }
       const kind = req.query.kind === 'audio' ? 'audio' : 'video';
-      const asset = content!.content_assets?.find((candidate) => candidate.kind === kind) || null;
+      const asset = content!.assets?.find((candidate) => candidate.kind === kind) || null;
       if (!asset) return res.status(404).json({ error: 'Mídia indisponível para esta aula.' });
-      const signedUrl = await signAsset(adminClient, asset, 60 * 60);
-      return res.json({ url: signedUrl, expiresIn: 3600, mimeType: asset.mime_type });
+      const signedUrl = await signAsset(services.bucket, asset, 60 * 60);
+      return res.json({ url: signedUrl, expiresIn: 3600, mimeType: asset.mimeType });
     } catch (error) {
       console.error('[commercial] signed media failed', error);
       return res.status(500).json({ error: 'Não foi possível liberar a mídia.' });
     }
-  });
+  }));
 
-  router.get('/progress', requireAuth, async (req: CommercialRequest, res) => {
-    if (!adminClient || !req.commercialUser) return;
-    const { data, error } = await adminClient
-      .from('user_progress')
-      .select('content_id, lesson_id, segment_position, completed_percent, seconds_studied, state, last_studied_at')
-      .eq('user_id', req.commercialUser.id)
-      .order('last_studied_at', { ascending: false });
-    if (error) return res.status(500).json({ error: 'Não foi possível carregar seu progresso.' });
-    return res.json(data);
-  });
+  router.get('/progress', requireAuth, asyncRoute(async (req, res) => {
+    if (!services || !req.commercialUser) return;
+    const snapshot = await services.db.collection('progress').where('userId', '==', req.commercialUser.uid).get();
+    const progress = snapshot.docs
+      .map((document) => document.data())
+      .sort((left, right) => String(asIsoString(right.lastStudiedAt)).localeCompare(String(asIsoString(left.lastStudiedAt))))
+      .map((item) => ({
+        content_id: item.contentId,
+        lesson_id: item.lessonId || null,
+        segment_position: item.segmentPosition || 0,
+        completed_percent: item.completedPercent || 0,
+        seconds_studied: item.secondsStudied || 0,
+        state: item.state || {},
+        last_studied_at: asIsoString(item.lastStudiedAt),
+      }));
+    return res.json(progress);
+  }));
 
-  router.put('/progress/:contentId', requireAuth, async (req: CommercialRequest, res) => {
-    if (!adminClient || !req.commercialUser) return;
+  router.put('/progress/:contentId', requireAuth, asyncRoute(async (req, res) => {
+    if (!services || !req.commercialUser) return;
     const contentId = req.params.contentId;
     const lessonId = req.body?.lessonId;
     const segmentPosition = Number(req.body?.segmentPosition ?? 0);
     const completedPercent = Number(req.body?.completedPercent ?? 0);
     const secondsStudied = Number(req.body?.secondsStudied ?? 0);
-    const state = req.body?.state && typeof req.body.state === 'object' ? req.body.state : {};
+    const state = req.body?.state && typeof req.body.state === 'object' && !Array.isArray(req.body.state)
+      ? req.body.state
+      : {};
+    if (!isUuid(contentId) || (lessonId != null && !isUuid(lessonId))) return res.status(400).json({ error: 'Identificador de conteúdo inválido.' });
+    if (!Number.isInteger(segmentPosition) || segmentPosition < 0) return res.status(400).json({ error: 'Posição de frase inválida.' });
+    if (!Number.isFinite(completedPercent) || completedPercent < 0 || completedPercent > 100) return res.status(400).json({ error: 'Percentual de conclusão inválido.' });
+    if (!Number.isInteger(secondsStudied) || secondsStudied < 0) return res.status(400).json({ error: 'Tempo de estudo inválido.' });
+    if (Buffer.byteLength(JSON.stringify(state), 'utf8') > 100_000) return res.status(413).json({ error: 'Estado de estudo muito grande.' });
 
-    if (!isUuid(contentId) || (lessonId != null && !isUuid(lessonId))) {
-      return res.status(400).json({ error: 'Identificador de conteúdo inválido.' });
-    }
-    if (!Number.isInteger(segmentPosition) || segmentPosition < 0) {
-      return res.status(400).json({ error: 'Posição de frase inválida.' });
-    }
-    if (!Number.isFinite(completedPercent) || completedPercent < 0 || completedPercent > 100) {
-      return res.status(400).json({ error: 'Percentual de conclusão inválido.' });
-    }
-    if (!Number.isInteger(secondsStudied) || secondsStudied < 0) {
-      return res.status(400).json({ error: 'Tempo de estudo inválido.' });
-    }
+    const contentSnapshot = await services.db.collection('contentItems').doc(contentId).get();
+    const content = contentSnapshot.exists ? ({ id: contentSnapshot.id, ...contentSnapshot.data() } as ContentRecord) : null;
+    if (!await ensureContentAccess(req.commercialUser.uid, content)) return res.status(404).json({ error: 'Conteúdo indisponível.' });
+    const activeLesson = await loadLesson(services.db, content!);
+    if (!activeLesson) return res.status(409).json({ error: 'A aula publicada está indisponível.' });
+    if (lessonId && lessonId !== activeLesson.id) return res.status(400).json({ error: 'Aula inválida para este conteúdo.' });
+    if (segmentPosition >= activeLesson.segments.length) return res.status(400).json({ error: 'Posição de frase fora da aula.' });
 
-    const { data: content } = await adminClient
-      .from('content_items')
-      .select(CONTENT_SELECT)
-      .eq('id', contentId)
-      .eq('status', 'published')
-      .maybeSingle();
-    if (!await ensureContentAccess(req.commercialUser.id, content as unknown as ContentRecord | null)) {
-      return res.status(404).json({ error: 'Conteúdo indisponível.' });
-    }
+    const lastStudiedAt = Timestamp.now();
+    const progress = {
+      userId: req.commercialUser.uid,
+      contentId,
+      lessonId: activeLesson.id,
+      segmentPosition,
+      completedPercent,
+      secondsStudied,
+      state,
+      lastStudiedAt,
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    await services.db.collection('progress').doc(`${req.commercialUser.uid}_${contentId}`).set({
+      ...progress,
+      createdAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return res.json({
+      content_id: contentId,
+      lesson_id: activeLesson.id,
+      segment_position: segmentPosition,
+      completed_percent: completedPercent,
+      seconds_studied: secondsStudied,
+      state,
+      last_studied_at: lastStudiedAt.toDate().toISOString(),
+    });
+  }));
 
-    const { data, error } = await adminClient
-      .from('user_progress')
-      .upsert({
-        user_id: req.commercialUser.id,
-        content_id: contentId,
-        lesson_id: lessonId || null,
-        segment_position: segmentPosition,
-        completed_percent: completedPercent,
-        seconds_studied: secondsStudied,
-        state,
-        last_studied_at: new Date().toISOString(),
-      }, { onConflict: 'user_id,content_id' })
-      .select('content_id, lesson_id, segment_position, completed_percent, seconds_studied, state, last_studied_at')
-      .single();
-    if (error) return res.status(500).json({ error: 'Não foi possível salvar seu progresso.' });
-    return res.json(data);
+  router.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) return next(error);
+    console.error('[commercial] unhandled request error', error);
+    const status = error instanceof HttpError ? error.status : 500;
+    const message = error instanceof HttpError ? error.message : 'Não foi possível concluir esta operação.';
+    return res.status(status).json({ error: message });
   });
 
-  return {
-    router,
-    protectAi,
-    configured,
-    cloudMode,
-  };
+  return { router, protectAi, configured, cloudMode };
 }

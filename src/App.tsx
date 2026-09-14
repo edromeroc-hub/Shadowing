@@ -15,11 +15,11 @@ import {
 } from './lib/commercialApi';
 import {
   commercialCloudMode,
-  mapSupabaseUser,
-  supabase,
-  supabaseConfigured,
+  commercialAuth,
+  commercialAuthConfigured,
+  mapLegacyAuthUser,
   type AppUser,
-} from './lib/supabase';
+} from './lib/firebase';
 import { YouTubeCaptions } from './native/youtubeCaptions';
 import { prepareNativeAILesson } from './native/lesson';
 
@@ -943,10 +943,10 @@ export default function App() {
     let cancelled = false;
     let unsubscribeAuth: (() => void) | undefined;
 
-    if (supabase) {
-      void supabase.auth.getSession().then(({ data }) => {
+    if (commercialAuth) {
+      void commercialAuth.auth.getSession().then(({ data }) => {
         if (cancelled) return;
-        const sessionUser = data.session?.user ? mapSupabaseUser(data.session.user) : null;
+        const sessionUser = data.session?.user ? mapLegacyAuthUser(data.session.user) : null;
         setUser(sessionUser);
         if (sessionUser) {
           setStudyHistory(readStudyHistory(sessionUser.id));
@@ -956,9 +956,9 @@ export default function App() {
         }
       });
 
-      const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      const { data } = commercialAuth.auth.onAuthStateChange((_event, session) => {
         if (cancelled) return;
-        const sessionUser = session?.user ? mapSupabaseUser(session.user) : null;
+        const sessionUser = session?.user ? mapLegacyAuthUser(session.user) : null;
         setUser(sessionUser);
         if (sessionUser) {
           window.setTimeout(() => void refreshCommercialStudyHistory(sessionUser).catch(console.error), 0);
@@ -1507,13 +1507,13 @@ export default function App() {
       return;
     }
 
-    if (supabase) {
+    if (commercialAuth) {
       setAuthSubmitting(true);
       setAuthError(null);
       setAuthMessage(null);
       try {
         if (authMode === 'signup') {
-          const { data, error } = await supabase.auth.signUp({
+          const { data, error } = await commercialAuth.auth.signUp({
             email,
             password,
             options: { data: { display_name: name, country_code: 'BR' } },
@@ -1523,13 +1523,13 @@ export default function App() {
             setAuthMessage('Conta criada. Confirme o e-mail recebido para entrar.');
             return;
           }
-          const sessionUser = mapSupabaseUser(data.user!);
+          const sessionUser = mapLegacyAuthUser(data.user!);
           setUser(sessionUser);
           void refreshCommercialStudyHistory(sessionUser).catch(console.error);
         } else {
-          const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+          const { data, error } = await commercialAuth.auth.signInWithPassword({ email, password });
           if (error) throw error;
-          const sessionUser = mapSupabaseUser(data.user);
+          const sessionUser = mapLegacyAuthUser(data.user);
           setUser(sessionUser);
           void refreshCommercialStudyHistory(sessionUser).catch(console.error);
         }
@@ -1582,8 +1582,8 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    if (supabase) {
-      await supabase.auth.signOut();
+    if (commercialAuth) {
+      await commercialAuth.auth.signOut();
       setUser(null);
       setStudyHistory([]);
       return;
@@ -1593,12 +1593,12 @@ export default function App() {
   };
 
   const handleDeleteAccount = async () => {
-    if (!commercialCloudMode || !supabase) return;
+    if (!commercialCloudMode || !commercialAuth) return;
     const confirmed = window.confirm('Excluir permanentemente sua conta e todo o progresso? Esta ação não pode ser desfeita.');
     if (!confirmed) return;
     try {
       await deleteCommercialAccount();
-      await supabase.auth.signOut();
+      await commercialAuth.auth.signOut();
       setUser(null);
       setStudyHistory([]);
     } catch (deleteError: any) {
@@ -1751,7 +1751,7 @@ export default function App() {
               {authMode === 'login' ? 'Entrar' : 'Criar conta'}
             </h2>
             <p className="text-sm text-gray-400 mt-1">
-              {supabaseConfigured
+              {commercialAuthConfigured
                 ? 'Sua conta protege o progresso e os recursos de IA em todos os dispositivos.'
                 : 'Modo local: seu progresso fica salvo somente neste dispositivo.'}
             </p>

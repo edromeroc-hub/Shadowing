@@ -1,8 +1,11 @@
 import 'dotenv/config';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
-import { createClient } from '@supabase/supabase-js';
+import { readFile, stat } from 'node:fs/promises';
+import { applicationDefault, getApps, initializeApp } from 'firebase-admin/app';
+import { FieldValue, Timestamp, getFirestore } from 'firebase-admin/firestore';
+import { getStorage } from 'firebase-admin/storage';
 
 type AssetInput = {
   file: string;
@@ -88,6 +91,12 @@ function resolveInputFile(manifestDirectory: string, file: string) {
   return path.resolve(manifestDirectory, file);
 }
 
+async function hashFile(file: string) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
 function validateManifest(manifest: Manifest) {
   if (manifest.legalReviewConfirmed !== true) {
     throw new Error('A publicação exige legalReviewConfirmed=true após revisão documental dos direitos.');
@@ -107,7 +116,7 @@ function validateManifest(manifest: Manifest) {
     throw new Error('Informe explicitamente pelo menos um território autorizado.');
   }
   if (!manifest.rights.allowedTerritories.every((territory) => /^[A-Za-z]{2}$/.test(territory.trim()))) {
-    throw new Error('Cada território autorizado deve usar um código ISO de duas letras, como BR ou US.');
+    throw new Error('Cada território deve usar um código ISO de duas letras, como BR ou US.');
   }
   if (!Array.isArray(manifest.lesson?.segments) || manifest.lesson.segments.length === 0) {
     throw new Error('A aula precisa de pelo menos um segmento revisado.');
@@ -122,168 +131,147 @@ function validateManifest(manifest: Manifest) {
 
 async function main() {
   const manifestArgument = process.argv[2];
-  if (!manifestArgument) {
-    throw new Error('Uso: npm run content:publish -- content/catalog/meu-conteudo.json');
-  }
+  if (!manifestArgument) throw new Error('Uso: npm run content:publish -- content/catalog/meu-conteudo.json');
 
   const manifestPath = path.resolve(process.cwd(), manifestArgument);
   const manifestDirectory = path.dirname(manifestPath);
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Manifest;
   validateManifest(manifest);
 
-  const supabase = createClient(
-    requiredEnvironment('SUPABASE_URL'),
-    requiredEnvironment('SUPABASE_SECRET_KEY'),
-    { auth: { autoRefreshToken: false, persistSession: false } },
-  );
+  const projectId = requiredEnvironment('FIREBASE_PROJECT_ID');
+  const storageBucket = String(process.env.FIREBASE_STORAGE_BUCKET || `${projectId}.firebasestorage.app`).trim();
+  const app = getApps()[0] || initializeApp({
+    credential: applicationDefault(),
+    projectId,
+    storageBucket,
+  });
+  const db = getFirestore(app);
+  const bucket = getStorage(app).bucket(storageBucket);
 
-  const upload = async (bucket: string, objectPath: string, inputFile: string, explicitMimeType?: string) => {
+  const upload = async (objectPath: string, inputFile: string, explicitMimeType?: string) => {
     const absolutePath = resolveInputFile(manifestDirectory, inputFile);
-    const body = await readFile(absolutePath);
+    const fileInfo = await stat(absolutePath);
     const contentType = explicitMimeType || mimeByExtension[path.extname(absolutePath).toLowerCase()];
     if (!contentType) throw new Error(`Informe mimeType para ${inputFile}.`);
-    const { error } = await supabase.storage.from(bucket).upload(objectPath, body, {
-      contentType,
-      upsert: true,
+    await bucket.upload(absolutePath, {
+      destination: objectPath,
+      resumable: fileInfo.size > 5 * 1024 * 1024,
+      metadata: {
+        contentType,
+        cacheControl: 'private, max-age=0, no-store',
+      },
     });
-    if (error) throw error;
-    return { absolutePath, contentType, sizeBytes: body.byteLength };
+    return { contentType, sizeBytes: fileInfo.size };
   };
 
-  const now = new Date().toISOString();
-  const { data: content, error: contentError } = await supabase
-    .from('content_items')
-    .upsert({
-      slug: manifest.slug,
-      title: manifest.title.trim(),
-      description: manifest.description.trim(),
-      creator: manifest.creator.trim(),
-      source_country: manifest.sourceCountry?.toUpperCase() || null,
-      primary_language: manifest.primaryLanguage || 'en',
-      difficulty: manifest.difficulty,
-      theme: manifest.theme,
-      duration_seconds: manifest.durationSeconds,
-      status: 'draft',
-      published_at: null,
-    }, { onConflict: 'slug' })
-    .select('id')
-    .single();
-  if (contentError) throw contentError;
+  const existing = await db.collection('contentItems').where('slug', '==', manifest.slug).limit(1).get();
+  const contentId = existing.docs[0]?.id || randomUUID();
+  const contentRef = db.collection('contentItems').doc(contentId);
+  await contentRef.set({
+    slug: manifest.slug,
+    title: manifest.title.trim(),
+    description: manifest.description.trim(),
+    creator: manifest.creator.trim(),
+    sourceCountry: manifest.sourceCountry?.toUpperCase() || null,
+    primaryLanguage: manifest.primaryLanguage || 'en',
+    difficulty: manifest.difficulty,
+    theme: manifest.theme,
+    durationSeconds: manifest.durationSeconds,
+    status: 'draft',
+    publishedAt: null,
+    updatedAt: FieldValue.serverTimestamp(),
+    createdAt: existing.empty
+      ? FieldValue.serverTimestamp()
+      : existing.docs[0].data().createdAt || FieldValue.serverTimestamp(),
+  }, { merge: true });
 
-  const contentId = content.id;
-  const evidenceFileName = path.basename(manifest.rights.evidence);
-  const evidencePath = `${manifest.slug}/${Date.now()}-${evidenceFileName}`;
-  await upload('rights-evidence', evidencePath, manifest.rights.evidence);
-  const sourceVideo = await readFile(resolveInputFile(manifestDirectory, manifest.assets.video.file));
-  const sourceFileSha256 = createHash('sha256').update(sourceVideo).digest('hex');
+  const evidencePath = `rights-evidence/${manifest.slug}/${Date.now()}-${path.basename(manifest.rights.evidence)}`;
+  await upload(evidencePath, manifest.rights.evidence);
+  const sourceFileSha256 = await hashFile(resolveInputFile(manifestDirectory, manifest.assets.video.file));
 
-  const { error: rightsDraftError } = await supabase.from('content_rights').upsert({
-    content_id: contentId,
-    basis: manifest.rights.basis,
-    status: 'pending',
-    rights_holder: manifest.rights.rightsHolder.trim(),
-    rights_contact: manifest.rights.rightsContact?.trim() || null,
-    source_url: manifest.rights.sourceUrl.trim(),
-    source_file_sha256: sourceFileSha256,
-    license_name: manifest.rights.licenseName || null,
-    license_url: manifest.rights.licenseUrl || null,
-    attribution_text: manifest.rights.attributionText || null,
-    evidence_path: evidencePath,
-    notes: manifest.rights.notes || '',
-    allowed_territories: manifest.rights.allowedTerritories.map((territory) => territory.toUpperCase()),
-    commercial_use: true,
-    derivative_works: manifest.rights.derivativeWorks,
-    streaming_allowed: manifest.rights.streamingAllowed,
-    offline_download_allowed: manifest.rights.offlineDownloadAllowed,
-    translation_allowed: manifest.rights.translationAllowed,
-    valid_from: manifest.rights.validFrom || null,
-    valid_through: manifest.rights.validThrough || null,
-    reviewed_at: null,
-    reviewed_by: manifest.rights.reviewedBy || null,
-  });
-  if (rightsDraftError) throw rightsDraftError;
-
-  const assetEntries = Object.entries(manifest.assets).filter((entry): entry is [keyof Manifest['assets'], AssetInput] => Boolean(entry[1]?.file));
-  const uploadedAssets = [];
-  let artworkPath: string | null = null;
+  const assetEntries = Object.entries(manifest.assets)
+    .filter((entry): entry is [keyof Manifest['assets'], AssetInput] => Boolean(entry[1]?.file));
+  const assets = [];
   for (const [kind, asset] of assetEntries) {
-    const bucket = kind === 'artwork' ? 'lesson-artwork' : 'lesson-media';
-    const objectPath = `${manifest.slug}/${kind}${path.extname(asset.file).toLowerCase()}`;
-    const uploaded = await upload(bucket, objectPath, asset.file, asset.mimeType);
-    if (kind === 'artwork') artworkPath = objectPath;
-    uploadedAssets.push({
-      content_id: contentId,
+    const objectPath = `lesson-assets/${manifest.slug}/${kind}${path.extname(asset.file).toLowerCase()}`;
+    const uploaded = await upload(objectPath, asset.file, asset.mimeType);
+    assets.push({
       kind,
-      storage_bucket: bucket,
-      storage_path: objectPath,
-      language_code: asset.languageCode || (kind === 'captions' || kind === 'transcript' ? 'en' : null),
-      mime_type: uploaded.contentType,
-      size_bytes: uploaded.sizeBytes,
-      duration_seconds: kind === 'video' || kind === 'audio' ? manifest.durationSeconds : null,
+      storagePath: objectPath,
+      languageCode: asset.languageCode || (kind === 'captions' || kind === 'transcript' ? 'en' : null),
+      mimeType: uploaded.contentType,
+      sizeBytes: uploaded.sizeBytes,
+      durationSeconds: kind === 'video' || kind === 'audio' ? manifest.durationSeconds : null,
     });
   }
 
-  const { error: deleteAssetsError } = await supabase.from('content_assets').delete().eq('content_id', contentId);
-  if (deleteAssetsError) throw deleteAssetsError;
-  const { error: assetsError } = await supabase.from('content_assets').insert(uploadedAssets);
-  if (assetsError) throw assetsError;
-
-  if (artworkPath) {
-    const { error } = await supabase.from('content_items').update({ artwork_path: artworkPath }).eq('id', contentId);
-    if (error) throw error;
+  const lessonId = randomUUID();
+  const segments = manifest.lesson.segments.map((segment, position) => ({
+    id: randomUUID(),
+    position,
+    start: segment.start,
+    end: segment.end,
+    text: segment.text.trim(),
+    translation: segment.translation.trim(),
+    difficulty: segment.difficulty || null,
+  }));
+  if (Buffer.byteLength(JSON.stringify(segments), 'utf8') > 800_000) {
+    throw new Error('A lista de segmentos excede o limite seguro de tamanho de um documento Firestore.');
   }
 
-  const { data: lesson, error: lessonError } = await supabase
-    .from('lessons')
-    .upsert({
-      content_id: contentId,
-      title: manifest.lesson.title,
-      version: manifest.lesson.version,
-      status: 'draft',
-      ai_model: manifest.lesson.aiModel || null,
-      segmentation_prompt_version: manifest.lesson.promptVersion || null,
-      reviewed_by: manifest.lesson.reviewedBy || null,
-      reviewed_at: null,
-    }, { onConflict: 'content_id,version' })
-    .select('id')
-    .single();
-  if (lessonError) throw lessonError;
+  const lessonRef = db.collection('lessons').doc(lessonId);
+  await lessonRef.set({
+    contentId,
+    title: manifest.lesson.title,
+    version: manifest.lesson.version,
+    status: 'draft',
+    aiModel: manifest.lesson.aiModel || null,
+    segmentationPromptVersion: manifest.lesson.promptVersion || null,
+    reviewedBy: manifest.lesson.reviewedBy || null,
+    reviewedAt: null,
+    segments,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
 
-  const { error: deleteSegmentsError } = await supabase.from('lesson_segments').delete().eq('lesson_id', lesson.id);
-  if (deleteSegmentsError) throw deleteSegmentsError;
-  const { error: segmentsError } = await supabase.from('lesson_segments').insert(
-    manifest.lesson.segments.map((segment, position) => ({
-      lesson_id: lesson.id,
-      position,
-      start_seconds: segment.start,
-      end_seconds: segment.end,
-      text: segment.text.trim(),
-      translation: segment.translation.trim(),
-      difficulty: segment.difficulty || manifest.difficulty,
-    })),
-  );
-  if (segmentsError) throw segmentsError;
-
-  const { error: approveRightsError } = await supabase.from('content_rights').update({
+  const reviewedAt = Timestamp.now();
+  const rights = {
+    basis: manifest.rights.basis,
     status: 'approved',
-    reviewed_at: now,
-  }).eq('content_id', contentId);
-  if (approveRightsError) throw approveRightsError;
+    rightsHolder: manifest.rights.rightsHolder.trim(),
+    rightsContact: manifest.rights.rightsContact?.trim() || null,
+    sourceUrl: manifest.rights.sourceUrl.trim(),
+    sourceFileSha256,
+    licenseName: manifest.rights.licenseName || null,
+    licenseUrl: manifest.rights.licenseUrl || null,
+    attributionText: manifest.rights.attributionText || null,
+    evidencePath,
+    notes: manifest.rights.notes || '',
+    allowedTerritories: [...new Set(manifest.rights.allowedTerritories.map((territory) => territory.trim().toUpperCase()))],
+    commercialUse: true,
+    derivativeWorks: manifest.rights.derivativeWorks,
+    streamingAllowed: manifest.rights.streamingAllowed,
+    offlineDownloadAllowed: manifest.rights.offlineDownloadAllowed,
+    translationAllowed: manifest.rights.translationAllowed,
+    validFrom: manifest.rights.validFrom || null,
+    validThrough: manifest.rights.validThrough || null,
+    reviewedAt,
+    reviewedBy: manifest.rights.reviewedBy || null,
+  };
 
-  const { error: publishLessonError } = await supabase.from('lessons').update({
+  const batch = db.batch();
+  batch.update(lessonRef, { status: 'published', reviewedAt, updatedAt: FieldValue.serverTimestamp() });
+  batch.set(contentRef, {
+    rights,
+    assets,
+    publishedLessonId: lessonId,
     status: 'published',
-    reviewed_at: now,
-  }).eq('id', lesson.id);
-  if (publishLessonError) throw publishLessonError;
+    publishedAt: reviewedAt,
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+  await batch.commit();
 
-  const { error: publishContentError } = await supabase.from('content_items').update({
-    status: 'published',
-    published_at: now,
-  }).eq('id', contentId);
-  if (publishContentError) throw publishContentError;
-
-  console.log(`Conteúdo publicado: ${manifest.title} (${manifest.slug})`);
-  console.log(`ID: ${contentId}`);
+  console.log(`Conteúdo publicado no Firebase: ${manifest.title} (${contentId})`);
 }
 
 main().catch((error) => {

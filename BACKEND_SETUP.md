@@ -1,113 +1,128 @@
-# Backend comercial do ShadowingAI
+# Backend comercial Firebase do ShadowingAI
 
-## Arquitetura entregue
+## Projeto criado
 
-- Supabase Auth para contas reais por e-mail e senha.
-- Postgres com RLS para perfis, catálogo, aulas, progresso, biblioteca e limites de IA.
-- Supabase Storage privado para mídia, arte e documentos de direitos.
-- API Node autenticada que valida o JWT, aplica território/licença e entrega URLs temporárias.
-- Chave do Gemini somente no servidor, com limite mensal por usuário e trilha de uso.
-- Exclusão de conta dentro do app.
-- Rotas de download, legenda e recomendação do YouTube bloqueadas em produção comercial.
+- Firebase Project ID: `shadowing-commercial-edromero`
+- Região do Firestore e das Functions: `southamerica-east1`
+- Aplicativo Web: `ShadowingAI Commercial Web`
+- Aplicativo iOS: `ShadowingAI Commercial iOS`
+- Bundle ID: `com.edromero.shadowing`
 
-## 1. Criar o projeto Supabase
+## Arquitetura
 
-Crie um projeto separado chamado `ShadowingAI Commercial` na organização `edromeroc-hub`, preferencialmente na região `sa-east-1`.
+- Firebase Authentication com e-mail e senha.
+- Firestore Standard para perfis, catálogo, aulas, progresso, direitos, planos e auditoria de IA.
+- Cloud Storage privado para vídeos, áudios, imagens e documentos de direitos.
+- Cloud Functions de segunda geração para a API Node autenticada.
+- Firebase Hosting para o aplicativo React e encaminhamento de `/api/**` para a função `api`.
+- Gemini acessível somente pela função, usando Secret Manager e quota por usuário.
 
-Não reutilize banco, chaves ou buckets de outro aplicativo.
+O cliente não consulta Firestore ou Storage diretamente. Ele recebe um Firebase ID token, envia esse token para a API e a API valida conta, plano, território e licença antes de liberar qualquer mídia.
 
-## 2. Aplicar o banco
+## Estado atual
 
-Aplique a migração:
+Já estão provisionados no plano Spark:
+
+- projeto Firebase exclusivo;
+- aplicativo Web e aplicativo iOS registrados;
+- Firebase Authentication com e-mail/senha;
+- Firestore Standard em São Paulo;
+- regras Firestore publicadas com acesso direto negado;
+- configuração de Firebase Hosting.
+
+O projeto ainda está sem faturamento. Projetos novos precisam do plano Blaze para criar o bucket do Cloud Storage e publicar Cloud Functions. Ativar Blaze não significa cobrança fixa, mas libera faturamento por uso acima das franquias gratuitas.
+
+## Segurança do Firestore
+
+As regras em `firestore.rules` usam `default deny`. O aplicativo comercial não recebe permissão direta para ler ou gravar nenhuma coleção. Somente o Firebase Admin SDK da API acessa:
+
+- `profiles/{uid}`;
+- `contentItems/{contentId}`;
+- `lessons/{lessonId}`;
+- `progress/{uid_contentId}`;
+- `entitlements/{uid}`;
+- `aiUsage/{requestId}`.
+
+Administradores são definidos por ambiente confiável e nunca por dados editáveis do usuário.
+
+## Segurança do Storage
+
+As regras em `storage.rules` negam acesso direto a todos os objetos. Depois de validar direitos e território, a API gera uma URL assinada com validade curta.
+
+Pastas utilizadas:
+
+- `lesson-assets/<slug>/video.mp4`;
+- `lesson-assets/<slug>/artwork.webp`;
+- `lesson-assets/<slug>/captions.vtt`;
+- `rights-evidence/<slug>/documento.pdf`.
+
+## Variáveis públicas do aplicativo
+
+O arquivo local `.env` está ignorado pelo Git. O build web/iOS utiliza apenas os valores públicos do Firebase Web SDK:
 
 ```text
-supabase/migrations/202609130001_commercial_backend.sql
+VITE_FIREBASE_API_KEY
+VITE_FIREBASE_AUTH_DOMAIN
+VITE_FIREBASE_PROJECT_ID
+VITE_FIREBASE_STORAGE_BUCKET
+VITE_FIREBASE_MESSAGING_SENDER_ID
+VITE_FIREBASE_APP_ID
+VITE_COMMERCIAL_CATALOG_MODE=true
+VITE_API_URL=
 ```
 
-Ela cria:
+Esses identificadores públicos não concedem acesso ao banco; a proteção efetiva está nas regras e na API.
 
-- `profiles`;
-- `content_items`, `content_rights` e `content_assets`;
-- `lessons` e `lesson_segments`;
-- `user_progress` e `user_library`;
-- `user_entitlements` e `ai_usage_events`;
-- buckets privados `lesson-media`, `lesson-artwork` e `rights-evidence`;
-- políticas RLS e funções de controle territorial.
+## Credenciais do servidor
 
-Depois da migração, rode os advisors de segurança e desempenho do Supabase. Nenhuma tabela do schema `public` deve ficar sem RLS.
-
-## 3. Configurar autenticação
-
-Em Supabase Authentication:
-
-1. mantenha e-mail/senha habilitado;
-2. configure os URLs do app web e os redirects autorizados;
-3. durante testes fechados, escolha conscientemente se a confirmação por e-mail ficará ligada;
-4. antes da App Store, configure Sign in with Apple se outro login social for oferecido;
-5. nunca use `user_metadata` para definir administradores.
-
-O papel administrativo deve ficar em `app_metadata.role = "admin"` e ser atribuído somente por ambiente seguro.
-
-## 4. Variáveis do servidor
-
-Copie `.env.example` para `.env` somente no ambiente local ou configure as variáveis no provedor:
+No Cloud Functions, o Firebase Admin usa credenciais automáticas. Para executar a API ou o publicador localmente, defina:
 
 ```text
-SUPABASE_URL
-SUPABASE_PUBLISHABLE_KEY
-SUPABASE_SECRET_KEY
-GEMINI_API_KEY
+FIREBASE_PROJECT_ID=shadowing-commercial-edromero
+FIREBASE_STORAGE_BUCKET=shadowing-commercial-edromero.firebasestorage.app
+GOOGLE_APPLICATION_CREDENTIALS=/caminho/privado/firebase-admin.json
 COMMERCIAL_CLOUD_MODE=true
 ENABLE_LEGACY_YOUTUBE=false
-APP_ALLOWED_ORIGINS=https://SEU_FRONTEND,capacitor://localhost
 ```
 
-`SUPABASE_SECRET_KEY` e `GEMINI_API_KEY` nunca entram no frontend, no IPA ou no repositório.
+O JSON administrativo nunca deve entrar no repositório, bundle web ou IPA.
 
-## 5. Variáveis do app
+## Ativação final após Blaze
 
-O build web/iOS recebe somente valores públicos:
-
-```text
-VITE_SUPABASE_URL
-VITE_SUPABASE_PUBLISHABLE_KEY
-VITE_COMMERCIAL_CATALOG_MODE=true
-VITE_API_URL=https://SUA_API
-```
-
-A publishable key não substitui segurança: a proteção efetiva está nas políticas RLS e na validação da API.
-
-## 6. Hospedar a API
-
-Execute:
+1. Vincular uma conta de faturamento ao projeto `shadowing-commercial-edromero`.
+2. Criar o bucket padrão do Cloud Storage na região desejada.
+3. Configurar o segredo do Gemini:
 
 ```bash
-npm ci
-npm run build
-npm start
+npx -y firebase-tools@latest functions:secrets:set GEMINI_API_KEY --project shadowing-commercial-edromero
 ```
 
-Use Render, Fly.io, Railway, Cloud Run ou VPS com HTTPS. O processo precisa receber as variáveis de servidor e acessar Supabase/Gemini.
+4. Construir e publicar:
 
-O endpoint de verificação é:
+```bash
+npm run build
+npm run build:function
+npx -y firebase-tools@latest deploy --only storage,functions,hosting --project shadowing-commercial-edromero
+```
+
+5. Confirmar:
 
 ```text
-GET /api/commercial/health
+GET https://shadowing-commercial-edromero.web.app/api/commercial/health
 ```
 
-Em produção, o retorno esperado é `configured: true` e `cloudMode: true`.
+O retorno esperado contém `configured: true`, `cloudMode: true` e `provider: firebase`.
 
-## 7. Publicar conteúdo
+## Publicação de conteúdo
 
-Copie `content/catalog/example-commercial-content.json`, preencha os dados e coloque os arquivos locais nos caminhos indicados.
-
-O manifesto exige:
+Copie `content/catalog/example-commercial-content.json`, preencha os dados e coloque os arquivos nos caminhos locais indicados. O manifesto exige:
 
 - titular e fonte original;
 - arquivo permanente de evidência;
-- hash SHA-256 calculado automaticamente para o vídeo;
+- hash SHA-256 calculado automaticamente;
 - territórios explícitos;
-- permissões de streaming, tradução e, separadamente, download offline;
+- autorização comercial, streaming e tradução;
+- autorização separada para download offline;
 - frases e tempos revisados;
 - `legalReviewConfirmed: true` somente depois da revisão documental.
 
@@ -117,10 +132,11 @@ Publique com:
 npm run content:publish -- content/catalog/meu-conteudo.json
 ```
 
-O comando mantém o item como rascunho durante uploads e só publica depois que direitos, mídia, aula e segmentos terminam sem erro.
+O publicador mantém o conteúdo como rascunho durante os uploads e só aponta a aula publicada quando mídia, direitos e segmentos terminam sem erro.
 
-## 8. Rotas comerciais
+## Rotas comerciais
 
+- `GET /api/commercial/health`
 - `GET /api/commercial/me`
 - `PUT /api/commercial/me`
 - `DELETE /api/commercial/me`
@@ -129,17 +145,17 @@ O comando mantém o item como rascunho durante uploads e só publica depois que 
 - `GET /api/commercial/catalog/:slug/media`
 - `GET /api/commercial/progress`
 - `PUT /api/commercial/progress/:contentId`
+- `POST /api/analyzePronunciation`
 
-Todas, exceto `health`, exigem `Authorization: Bearer <Supabase access token>`.
+Todas, exceto `health`, exigem `Authorization: Bearer <Firebase ID token>`.
 
-## 9. Critérios antes do lançamento
+## Critérios antes do lançamento
 
-- projeto Supabase exclusivo do ShadowingAI;
-- advisors sem falhas críticas de segurança;
+- Blaze e alertas de orçamento configurados;
+- regras Firestore e Storage revisadas;
 - nenhum segredo dentro do bundle;
-- pelo menos um conteúdo aprovado disponível no território da conta de revisão;
-- política de privacidade e termos publicados;
+- pelo menos um conteúdo aprovado para `BR`;
 - exclusão de conta testada;
-- conta de demonstração para a Apple;
-- retirada de conteúdo testada mudando `content_items.status` para `archived`;
+- política de privacidade e termos publicados;
+- conta de demonstração para revisão;
 - build de iPhone e iPad validado contra a API HTTPS.
