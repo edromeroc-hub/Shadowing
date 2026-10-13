@@ -1,0 +1,18 @@
+{
+  "hosting": {
+    "site": "shadowingapp-native",
+    "public": "legal",
+    "ignore": ["**/.*", "**/node_modules/**"],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          {"key": "X-Content-Type-Options", "value": "nosniff"},
+          {"key": "Referrer-Policy", "value": "strict-origin-when-cross-origin"},
+          {"key": "Cache-Control", "value": "public, max-age=300"},
+          {"key": "Content-Security-Policy", "value": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"}
+        ]
+      }
+    ]
+  }
+}

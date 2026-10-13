@@ -1,0 +1,65 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    function validNativeStudy() {
+      return request.resource.data.keys().hasAll(['schemaVersion', 'payload', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['schemaVersion', 'payload', 'updatedAt'])
+        && request.resource.data.schemaVersion == 1
+        && request.resource.data.payload is string
+        && request.resource.data.payload.size() < 850000
+        && request.resource.data.updatedAt == request.time;
+    }
+
+    match /nativeStudy/{uid} {
+      allow get: if isOwner(uid);
+      allow list: if false;
+      allow create: if isOwner(uid) && validNativeStudy();
+      allow update: if isOwner(uid) && validNativeStudy();
+      allow delete: if isOwner(uid);
+    }
+
+    match /approvedShorts/{videoID} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    match /shortSignals/{uid} {
+      allow get, list, delete: if isOwner(uid);
+      allow create, update: if false;
+
+      match /votes/{videoID} {
+        allow get, list, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && videoID.matches('^[A-Za-z0-9_-]{11}$')
+          && request.resource.data.keys().hasAll(['videoID', 'level', 'interests', 'viewed', 'updatedAt'])
+          && request.resource.data.keys().hasOnly(['videoID', 'level', 'interests', 'viewed', 'reaction', 'updatedAt'])
+          && request.resource.data.videoID == videoID
+          && request.resource.data.level in ['beginner', 'intermediate', 'advanced']
+          && request.resource.data.interests is list
+          && request.resource.data.interests.size() <= 14
+          && request.resource.data.viewed == true
+          && request.resource.data.updatedAt == request.time
+          && (!('reaction' in request.resource.data) || request.resource.data.reaction in ['liked', 'hidden', 'neutral']);
+      }
+
+      match /suggestions/{day} {
+        allow get, list, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && day.matches('^[0-9]{8}$')
+          && request.resource.data.keys().hasAll(['videoIDs', 'updatedAt'])
+          && request.resource.data.keys().hasOnly(['videoIDs', 'updatedAt'])
+          && request.resource.data.videoIDs is list
+          && request.resource.data.videoIDs.size() <= 50
+          && request.resource.data.updatedAt == request.time;
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

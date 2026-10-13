@@ -1,0 +1,10 @@
+Audit run: 2026-10-07
+Command: zsh "Shadowing Native/Audits/run-segmentation-layout.zsh"
+Exit: 0
+normal: phrases=1 maxDuration=8.0s maxWords=21 maxCharacters=125 wordsPreserved=true
+long_atomic: phrases=1 maxDuration=23.0s maxWords=61 maxCharacters=348 wordsPreserved=true
+dense_atomic: phrases=1 maxDuration=6.0s maxWords=61 maxCharacters=348 wordsPreserved=true
+short: phrases=1 maxDuration=2.0s maxWords=4 maxCharacters=17 wordsPreserved=true
+word_timed: phrases=1 maxDuration=4.0s maxWords=9 maxCharacters=39 wordsPreserved=true
+
+Diagnostic metrics, not a passing acceptance test. Oversized atomic segments remain oversized.

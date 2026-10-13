@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Curadoria · ShadowingApp</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">◉</span><span>Shadowing<span class="brand-light">App</span><small>CURADORIA LOCAL</small></span></div>
+      <div class="top-actions"><span class="local-badge"><span class="pulse"></span> Apenas neste Mac</span><button id="refresh" class="icon-button" type="button" aria-label="Atualizar painel" title="Atualizar">↻</button></div>
+    </header>
+
+    <section class="hero" aria-labelledby="page-title">
+      <div><p class="eyebrow">SHORTS · FILA DE REVISÃO</p><h1 id="page-title">Seu estúdio de <em>curadoria.</em></h1><p class="subhead">Assista, confira a legenda e decida o que merece entrar no catálogo. A busca continua em segundo plano.</p></div>
+      <div class="hero-decoration" aria-hidden="true"><span class="wave wave-one"></span><span class="wave wave-two"></span><span class="wave wave-three"></span><span class="wave wave-four"></span><span class="wave wave-five"></span></div>
+    </section>
+
+    <section class="stats" aria-label="Progresso da curadoria">
+      <div class="stat"><span class="stat-label">Para revisar</span><strong id="count-pending">—</strong><span class="stat-note">aguardando sua decisão</span></div>
+      <div class="stat"><span class="stat-label">Publicados</span><strong id="count-published">—</strong><span class="stat-note">disponíveis no catálogo</span></div>
+      <div class="stat"><span class="stat-label">Inspecionados</span><strong id="count-inspected">—</strong><span class="stat-note" id="inspected-note">busca em andamento</span></div>
+      <div class="stat"><span class="stat-label">Busca de hoje</span><strong id="count-searches">—</strong><span class="stat-note" id="last-update">aguardando atualização</span></div>
+    </section>
+
+    <main class="workspace">
+      <aside class="queue" aria-label="Candidatos de Shorts">
+        <div class="queue-heading"><div><p class="eyebrow">BIBLIOTECA EM CONSTRUÇÃO</p><h2>Candidatos</h2></div><span id="result-count" class="result-count">—</span></div>
+        <div class="tabs" role="tablist" aria-label="Estado dos Shorts">
+          <button type="button" class="tab active" data-status="pending" role="tab" aria-selected="true">Revisar</button>
+          <button type="button" class="tab" data-status="published" role="tab" aria-selected="false">Publicados</button>
+          <button type="button" class="tab" data-status="rejected" role="tab" aria-selected="false">Rejeitados</button>
+          <button type="button" class="tab" data-status="queued" role="tab" aria-selected="false">Na fila</button>
+        </div>
+        <div class="filters"><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Buscar vídeo, canal ou tema" autocomplete="off" aria-label="Buscar vídeo, canal ou tema"></label><label class="level-filter"><span class="sr-only">Nível</span><select id="level"><option value="">Todos os níveis</option><option value="beginner">Iniciante</option><option value="intermediate">Intermediário</option><option value="advanced">Avançado</option></select></label></div>
+        <div id="candidate-list" class="candidate-list" aria-live="polite"><p class="empty-state">Carregando candidatos…</p></div>
+        <div class="pagination"><button id="previous-page" type="button">← Anterior</button><span id="page-label">Página 1</span><button id="next-page" type="button">Próxima →</button></div>
+      </aside>
+
+      <section id="detail" class="detail" aria-label="Revisão do Short" aria-live="polite"><div class="detail-empty"><span class="detail-empty-icon">▶</span><h2>Escolha um Short</h2><p>Selecione um candidato para ouvir o vídeo, examinar os tempos e conferir os trechos de shadowing.</p></div></section>
+    </main>
+    <footer class="footer"><span>O algoritmo sugere. Você decide.</span><span>Legendas automáticas exigem conferência; direitos de uso comercial não são concedidos pela triagem.</span></footer>
+  </div>
+
+  <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title"><form method="dialog"><p class="eyebrow">REVISÃO MANUAL</p><h2 id="confirm-title"></h2><p id="confirm-description"></p><label id="review-check-label" class="review-check"><input id="review-check" type="checkbox"><span>Conferi o áudio, a legenda, os cortes e o nível deste Short.</span></label><div class="dialog-actions"><button type="button" id="cancel-action" class="secondary-button">Cancelar</button><button type="button" id="confirm-action" class="primary-button">Confirmar</button></div></form></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

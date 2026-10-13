@@ -1,0 +1,32 @@
+{
+  "name": "shadowing-short-curator",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "scan": "node curator.mjs scan",
+    "scan:configured": "node run-service.mjs scan",
+    "queue-channels:configured": "node run-service.mjs queue-channels",
+    "publish": "node curator.mjs publish",
+    "publish:configured": "node run-service.mjs publish",
+    "review": "node curator.mjs review",
+    "audit-shorts": "node run-service.mjs audit-shorts",
+    "resegment": "node curator.mjs resegment",
+    "reject": "node curator.mjs reject",
+    "trust-channel": "node curator.mjs trust-channel",
+    "untrust-channel": "node curator.mjs untrust-channel",
+    "aggregate": "node curator.mjs aggregate",
+    "aggregate:configured": "node run-service.mjs aggregate",
+    "dashboard": "node dashboard.mjs",
+    "dashboard:install": "node service.mjs install dashboard",
+    "dashboard:status": "node service.mjs status dashboard",
+    "dashboard:uninstall": "node service.mjs uninstall dashboard",
+    "service:install": "node service.mjs install",
+    "service:status": "node service.mjs status",
+    "service:uninstall": "node service.mjs uninstall",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.0",
+    "youtube-transcript": "^1.2.1"
+  }
+}

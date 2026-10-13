@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CLIENT_ID</key>
+    <string>656360211453-1onjmjbgr5co5gba44ne7rjminsd3bu6.apps.googleusercontent.com</string>
+    <key>REVERSED_CLIENT_ID</key>
+    <string>com.googleusercontent.apps.656360211453-1onjmjbgr5co5gba44ne7rjminsd3bu6</string>
+    <key>API_KEY</key>
+    <string>AIzaSyBrCowEW4N86Ws8CAGKQMNzUQ--2To8hT8</string>
+    <key>GCM_SENDER_ID</key>
+    <string>656360211453</string>
+    <key>PLIST_VERSION</key>
+    <string>1</string>
+    <key>BUNDLE_ID</key>
+    <string>com.edromero.shadowing.next</string>
+    <key>PROJECT_ID</key>
+    <string>shadowing-commercial-edromero</string>
+    <key>STORAGE_BUCKET</key>
+    <string>shadowing-commercial-edromero.firebasestorage.app</string>
+    <key>IS_ADS_ENABLED</key>
+    <false/>
+    <key>IS_ANALYTICS_ENABLED</key>
+    <false/>
+    <key>IS_APPINVITE_ENABLED</key>
+    <true/>
+    <key>IS_GCM_ENABLED</key>
+    <true/>
+    <key>IS_SIGNIN_ENABLED</key>
+    <true/>
+    <key>GOOGLE_APP_ID</key>
+    <string>1:656360211453:ios:8bed00b88f831ddc53cf94</string>
+</dict>
+</plist>

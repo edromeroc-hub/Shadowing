@@ -1,0 +1,6 @@
+# Artefatos de build e arquivos de distribuição (grandes; recriáveis)
+Distribution/builds/
+# Estado local do curador: legendas de terceiros, filas e backups
+curator/.state/
+# Preferências locais do Xcode
+xcuserdata/
