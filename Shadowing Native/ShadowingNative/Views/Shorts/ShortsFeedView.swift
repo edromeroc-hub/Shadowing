@@ -19,7 +19,6 @@ struct ShortsFeedView: View {
     @State private var refreshID = 0
     @State private var discoveryRequestID = UUID()
     @State private var isTypingResponse = false
-    @State private var pendingNextFromID: String?
     @State private var isSearchPresented = false
     @State private var pinnedShortIDs: Set<String> = []
     var previewItems: [YouTubeShortItem]? = nil
@@ -30,6 +29,10 @@ struct ShortsFeedView: View {
         return visiblePage
     }
 
+    private var visibleIndex: Int? {
+        items.firstIndex { $0.id == visibleItemID }
+    }
+
     var body: some View {
         ZStack {
             ShadowingTheme.ink.ignoresSafeArea()
@@ -37,19 +40,21 @@ struct ShortsFeedView: View {
             ScrollView(.vertical) {
                 LazyVStack(spacing: 0) {
                     ForEach(items) { item in
+                        let index = items.firstIndex(where: { $0.id == item.id }) ?? 0
                         VStack(spacing: 0) {
                         ShortLessonPage(
                             item: item,
-                            position: (items.firstIndex(where: { $0.id == item.id }) ?? 0) + 1,
+                            position: index + 1,
                             total: items.count,
                             isActive: visibleItemID == item.id && appModel.selectedTab == .shorts && scenePhase == .active && !isScrolling && !isSearchPresented,
                             isVisible: visibleItemID == item.id,
+                            // O vizinho já abre o player escondido: ao rolar, o vídeo está pronto em vez de preto.
+                            shouldLoadPlayer: visibleIndex.map { abs($0 - index) <= 1 } ?? false,
                             preparedTranscript: preparedLessons[item.videoID]?.transcript ?? previewTranscript,
                             preparedPhrases: preparedLessons[item.videoID]?.phrases,
                             isLayoutPreview: preparedLessons[item.videoID] == nil && previewTranscript != nil,
                             onShuffle: shuffleFeed,
                             onSearch: { isSearchPresented = true },
-                            onSwipe: { direction in movePage(from: item.id, by: direction) },
                             onRateDifficulty: { rating in
                                 progressStore.rateDifficulty(of: item, as: rating)
                                 if rating == .tooHard {
@@ -76,7 +81,7 @@ struct ShortsFeedView: View {
                 .scrollTargetLayout()
             }
             .scrollIndicators(.hidden)
-            .scrollTargetBehavior(.paging)
+            .modifier(OneShortPerSwipe())
             .scrollPosition(id: $visiblePage)
             .modifier(FeedScrollActivity(isScrolling: $isScrolling))
             .scrollDismissesKeyboard(.interactively)
@@ -187,7 +192,6 @@ struct ShortsFeedView: View {
             sharedCatalog.reset(for: appModel.profile.level)
             items = []
             visiblePage = nil
-            pendingNextFromID = nil
             lastHiddenItem = nil
             discoveryNotice = nil
             if let previewItems {
@@ -198,7 +202,6 @@ struct ShortsFeedView: View {
             await discoverShorts()
         }
         .onChange(of: visibleItemID) { _, itemID in
-            if let pendingNextFromID, itemID != pendingNextFromID { self.pendingNextFromID = nil }
             if let item = items.first(where: { $0.id == itemID }) {
                 Task { await ShortCatalogSignals.recordView(item: item, profile: appModel.profile) }
             }
@@ -224,23 +227,6 @@ struct ShortsFeedView: View {
         if items.count > 1, items.first?.id == currentID {
             items.append(items.removeFirst())
             visiblePage = items.first?.id
-        }
-    }
-
-    private func movePage(from itemID: String, by direction: Int) {
-        guard visibleItemID == itemID,
-              let index = items.firstIndex(where: { $0.id == itemID }) else { return }
-        guard items.indices.contains(index + direction) else {
-            if direction > 0, canLoadMore {
-                pendingNextFromID = itemID
-                Task { await discoverShorts() }
-            }
-            return
-        }
-        isTypingResponse = false
-        pendingNextFromID = nil
-        withAnimation(.easeOut(duration: 0.25)) {
-            visiblePage = items[index + direction].id
         }
     }
 
@@ -296,7 +282,6 @@ struct ShortsFeedView: View {
                 } catch {
                     sharedCatalog.markUnavailable()
                     discoveryNotice = "Não foi possível carregar os Shorts. Verifique a conexão e tente novamente."
-                    pendingNextFromID = nil
                     return
                 }
                 guard !Task.isCancelled, discoveryRequestID == requestID else { return }
@@ -319,12 +304,10 @@ struct ShortsFeedView: View {
                 }
             }
             canLoadMore = false
-            pendingNextFromID = nil
             discoveryNotice = items.isEmpty ? nil : "Você viu todos os Shorts do seu nível por hoje. Novos chegam todos os dias."
         } catch {
             guard !Task.isCancelled, discoveryRequestID == requestID else { return }
             discoveryNotice = error.localizedDescription
-            pendingNextFromID = nil
         }
     }
 }
@@ -342,6 +325,7 @@ private struct ShortLessonPage: View {
     let total: Int
     let isActive: Bool
     let isVisible: Bool
+    let shouldLoadPlayer: Bool
     let preparedTranscript: YouTubeTranscript?
     let preparedPhrases: [ShadowingPhrase]?
     /// Só a auditoria de layout troca o vídeo por um retângulo; aulas prontas do catálogo tocam o YouTube.
@@ -354,7 +338,6 @@ private struct ShortLessonPage: View {
     }
     let onShuffle: () -> Void
     let onSearch: () -> Void
-    let onSwipe: (Int) -> Void
     let onRateDifficulty: (ShortDifficultyRating) -> Void
     let onReact: (ShortReaction) -> Void
     let onTypingChanged: (Bool) -> Void
@@ -431,8 +414,8 @@ private struct ShortLessonPage: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             keyboardTop = nil
         }
-        .task(id: isVisible) {
-            if isVisible {
+        .task(id: shouldLoadPlayer) {
+            if shouldLoadPlayer {
                 await loadTranscriptIfNeeded()
 #if DEBUG && targetEnvironment(simulator)
                 if isLayoutPreview {
@@ -563,14 +546,16 @@ private struct ShortLessonPage: View {
                     }
                     .foregroundStyle(.secondary)
                 }
-            } else if isVisible {
-                YouTubePlayerView(videoID: item.videoID, controller: playerController, allowsAutoplay: true, onVerticalSwipe: onSwipe)
+            } else if shouldLoadPlayer {
+                YouTubePlayerView(videoID: item.videoID, controller: playerController, allowsAutoplay: true)
+                    .overlay {
+                        if !playerController.hasRenderedVideo {
+                            thumbnail
+                                .overlay { if isVisible { ProgressView().tint(.white) } }
+                        }
+                    }
             } else {
-                AsyncImage(url: URL(string: "https://i.ytimg.com/vi/\(item.videoID)/hqdefault.jpg")) { image in
-                    image.resizable().scaledToFit()
-                } placeholder: {
-                    Rectangle().fill(.black).overlay { Image(systemName: "play.rectangle").foregroundStyle(.secondary) }
-                }
+                thumbnail
             }
         }
         .frame(width: max(200, height * 9 / 16), height: height)
@@ -580,6 +565,16 @@ private struct ShortLessonPage: View {
                 .stroke(.white.opacity(0.14), lineWidth: 1)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private var thumbnail: some View {
+        AsyncImage(url: URL(string: "https://i.ytimg.com/vi/\(item.videoID)/hqdefault.jpg")) { image in
+            image.resizable().scaledToFill()
+        } placeholder: {
+            Rectangle().fill(.black).overlay { Image(systemName: "play.rectangle").foregroundStyle(.secondary) }
+        }
+        .background(.black)
+        .allowsHitTesting(false)
     }
 
     @ViewBuilder
@@ -862,6 +857,17 @@ private struct ShortLessonPage: View {
         if !exerciseMode.isActiveListening { exerciseMode = .multipleChoice }
         if let selectedPhrase {
             playerController.play(phrase: selectedPhrase)
+        }
+    }
+}
+
+/// Um Short por gesto, sempre parando alinhado ao topo da página (nunca entre dois Shorts).
+private struct OneShortPerSwipe: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.scrollTargetBehavior(.viewAligned(limitBehavior: .alwaysByOne))
+        } else {
+            content.scrollTargetBehavior(.viewAligned(limitBehavior: .always))
         }
     }
 }

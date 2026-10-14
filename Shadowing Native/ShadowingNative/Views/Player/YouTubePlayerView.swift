@@ -24,6 +24,8 @@ final class YouTubePlayerController {
     var duration = 0.0
     var state: PlaybackState = .unstarted
     var activePhrase: ShadowingPhrase?
+    /// Fica falso até o primeiro quadro tocar: a tela mostra a capa do vídeo em vez do player preto.
+    private(set) var hasRenderedVideo = false
     var isLoopEnabled = true
     var isWaitingForStudent = false
     var pauseMultiplier = 1.0
@@ -44,6 +46,7 @@ final class YouTubePlayerController {
         activePhrase = nil
         hasReachedPhraseEnd = false
         playbackError = nil
+        hasRenderedVideo = false
         state = .unstarted
     }
 
@@ -164,6 +167,7 @@ final class YouTubePlayerController {
             if let rawValue = number(message["value"]).map(Int.init),
                let newState = PlaybackState(rawValue: rawValue) {
                 state = newState
+                if newState == .playing { hasRenderedVideo = true }
                 if newState == .playing, !playbackAllowed {
                     pause()
                 } else if newState == .playing, isWaitingForStudent, let activePhrase {
@@ -281,17 +285,15 @@ struct YouTubePlayerView: UIViewRepresentable {
     let videoID: String
     let controller: YouTubePlayerController
     let allowsAutoplay: Bool
-    let onVerticalSwipe: ((Int) -> Void)?
 
-    init(videoID: String, controller: YouTubePlayerController, allowsAutoplay: Bool = false, onVerticalSwipe: ((Int) -> Void)? = nil) {
+    init(videoID: String, controller: YouTubePlayerController, allowsAutoplay: Bool = false) {
         self.videoID = videoID
         self.controller = controller
         self.allowsAutoplay = allowsAutoplay
-        self.onVerticalSwipe = onVerticalSwipe
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(controller: controller, onVerticalSwipe: onVerticalSwipe)
+        Coordinator(controller: controller)
     }
 
     func makeUIView(context: Context) -> WKWebView {
@@ -304,10 +306,9 @@ struct YouTubePlayerView: UIViewRepresentable {
         webView.isOpaque = false
         webView.backgroundColor = .clear
         webView.scrollView.isScrollEnabled = false
-        let swipeGesture = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleVerticalSwipe(_:)))
-        swipeGesture.cancelsTouchesInView = false
-        swipeGesture.delegate = context.coordinator
-        webView.addGestureRecognizer(swipeGesture)
+        // O aluno controla o trecho só pelos botões do app: tocar no vídeo pularia a linha do tempo e
+        // desencontraria a frase. Sem toque, o arrasto também passa direto para a rolagem do feed.
+        webView.isUserInteractionEnabled = false
         webView.navigationDelegate = context.coordinator
         controller.connect(webView)
         context.coordinator.videoID = videoID
@@ -316,7 +317,6 @@ struct YouTubePlayerView: UIViewRepresentable {
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
-        context.coordinator.onVerticalSwipe = onVerticalSwipe
         guard context.coordinator.videoID != videoID else { return }
         context.coordinator.videoID = videoID
         controller.prepareForVideo()
@@ -360,7 +360,7 @@ struct YouTubePlayerView: UIViewRepresentable {
               player = new YT.Player('player', {
                 width: '100%', height: '100%', videoId: '\(videoID)',
                 playerVars: {
-                  playsinline: 1, controls: 1, rel: 0,
+                  playsinline: 1, controls: 0, disablekb: 1, fs: 0, rel: 0,
                   cc_load_policy: 0, iv_load_policy: 3,
                   enablejsapi: 1, origin: '\(origin)'
                 },
@@ -398,25 +398,12 @@ struct YouTubePlayerView: UIViewRepresentable {
         webView.loadHTMLString(html, baseURL: URL(string: origin))
     }
 
-    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, UIGestureRecognizerDelegate {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let controller: YouTubePlayerController
         var videoID = ""
-        var onVerticalSwipe: ((Int) -> Void)?
 
-        init(controller: YouTubePlayerController, onVerticalSwipe: ((Int) -> Void)?) {
+        init(controller: YouTubePlayerController) {
             self.controller = controller
-            self.onVerticalSwipe = onVerticalSwipe
-        }
-
-        @objc func handleVerticalSwipe(_ gesture: UIPanGestureRecognizer) {
-            guard gesture.state == .ended else { return }
-            let translation = gesture.translation(in: gesture.view)
-            guard abs(translation.y) > 60, abs(translation.y) > abs(translation.x) * 1.2 else { return }
-            onVerticalSwipe?(translation.y < 0 ? 1 : -1)
-        }
-
-        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-            true
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
