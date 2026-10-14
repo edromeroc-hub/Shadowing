@@ -523,9 +523,12 @@ struct ExploreView: View {
                 .padding(.bottom, 28)
             }
             .scrollIndicators(.hidden)
+            .opaqueTopScrollEdge()
         }
         .navigationTitle("Vídeos")
         .navigationBarTitleDisplayMode(.inline)
+        // Fundo visível: sem ele, o conteúdo rolado passava por baixo do título e do relógio.
+        .toolbarBackground(.visible, for: .navigationBar)
         .onChange(of: appModel.profile.interests) { _, interests in
             if let selectedInterest, !interests.contains(selectedInterest) {
                 self.selectedInterest = nil
@@ -769,9 +772,12 @@ struct ProgressViewScreen: View {
                 .padding(.bottom, 28)
             }
             .scrollIndicators(.hidden)
+            .opaqueTopScrollEdge()
         }
         .navigationTitle("Progresso")
         .navigationBarTitleDisplayMode(.inline)
+        // Fundo visível: sem ele, o conteúdo rolado passava por baixo do título e do relógio.
+        .toolbarBackground(.visible, for: .navigationBar)
     }
 
     private func progressMetric(value: String, title: String, icon: String, color: Color) -> some View {
@@ -975,7 +981,7 @@ struct ProfileView: View {
                     Picker("Meta diária", selection: $model.profile.dailyCommitment) {
                         ForEach(DailyCommitment.allCases) { commitment in Text(commitment.title).tag(commitment) }
                     }
-                    Button("Interesses · \(appModel.profile.interests.count) temas") { showInterests = true }
+                    Button("Interesses · \(appModel.profile.interests.count) \(appModel.profile.interests.count == 1 ? "tema" : "temas")") { showInterests = true }
                     Text("Ajuste seu nível quando o treino parecer fácil ou difícil demais.")
                         .font(.caption)
                         .foregroundStyle(.secondary)

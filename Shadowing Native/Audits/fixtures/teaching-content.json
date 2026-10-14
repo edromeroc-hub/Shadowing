@@ -1,0 +1,31 @@
+{
+  "titleTerms": [
+    "learn english", "learning english", "english lesson", "english lessons", "english class",
+    "english teacher", "english tutor", "esl", "efl", "ielts", "toefl", "toeic", "cefr", "phrasal verb",
+    "phrasal verbs", "idiom", "idioms", "vocabulary", "vocab", "grammar", "pronunciation", "how to pronounce",
+    "how to say", "speak english", "speaking practice", "english speaking", "fluent english", "sound like a native",
+    "american accent", "british accent", "accent training", "english tips", "english conversation practice",
+    "listening practice", "shadowing", "aprenda inglês", "aprender inglês", "aula de inglês", "dica de inglês", "inglês"
+  ],
+  "channelTerms": [
+    "english", "inglês", "ingles", "teacher", "tutor", "learn", "lesson", "fluency", "fluent", "idioma"
+  ],
+  "transcriptMarkers": [
+    "repeat after me", "in english we say", "this word means", "the meaning of", "how do you say",
+    "let's practice", "today's lesson", "in this lesson", "pronounce it", "say it with me"
+  ],
+  "cases": [
+    {"title": "Learn English with Friends", "channel": "Some Channel", "teaching": true},
+    {"title": "5 Phrasal Verbs Natives Use", "channel": "Some Channel", "teaching": true},
+    {"title": "How to pronounce WATER in American English", "channel": "Some Channel", "teaching": true},
+    {"title": "IELTS Speaking Band 9", "channel": "Some Channel", "teaching": true},
+    {"title": "Aula de inglês: verb to be", "channel": "Some Channel", "teaching": true},
+    {"title": "Funny moment", "channel": "English with Lucy", "teaching": true},
+    {"title": "Funny moment", "channel": "mmmEnglish", "teaching": true},
+    {"title": "Conan Can't Stop Laughing", "channel": "Team Coco", "teaching": false},
+    {"title": "Would you rather fight 100 ducks?", "channel": "Jubilee", "teaching": false},
+    {"title": "Gordon Ramsay tries street food", "channel": "Gordon Ramsay", "teaching": false},
+    {"title": "NBA player trash talk mic'd up", "channel": "NBA", "teaching": false},
+    {"title": "Hot dogs are sandwiches", "channel": "SubwayTakes with Kareem Rahma", "teaching": false}
+  ]
+}

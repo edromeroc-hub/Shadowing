@@ -1,3 +1,5 @@
+> **CANCELADA em 14/10/2026.** O dono decidiu aceitar vídeos de professores de inglês no catálogo. **Não execute esta tarefa.** O arquivo fica só como referência.
+
 # 02: Filtro de conteúdo de aula de inglês (app + curador)
 
 ## Objetivo

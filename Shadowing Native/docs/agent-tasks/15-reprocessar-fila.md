@@ -1,4 +1,4 @@
-# 12: Reprocessar a fila atual (219 candidatos) com o novo pipeline
+# 15: Reprocessar a fila atual (219 candidatos) com o novo pipeline
 
 ## Objetivo
 Estender `npm run resegment` para refazer os candidatos pendentes com o pipeline novo:
@@ -9,7 +9,7 @@ Estender `npm run resegment` para refazer os candidatos pendentes com o pipeline
 O agente implementa e testa. **Quem roda com rede é o usuário.**
 
 ## Depende de
-Tarefas 03 a 08 e 11.
+Tarefas 03, 04, 06, 08, 10 e 13.
 
 ## Arquivos permitidos
 - `curator/curator.mjs` (função `resegment` e o que ela precisar)
@@ -22,9 +22,9 @@ Tarefas 03 a 08 e 11.
 3. **Legendas:**
    - existe `.state/captions/<id>.json` → use;
    - senão, com `--fetch`, chame `fetchCaptions` (concorrência 2 da tarefa 03) e salve o cache; ao receber `RateLimitedError`, **pare o laço**, grave o progresso e mostre "Retome mais tarde com o mesmo comando";
-   - sem `--fetch` e sem cache, use palavras estimadas a partir de `prepared.segments` (`timingQuality: 'estimated'`). A tarefa 11 manda esses itens para revisão.
+   - sem `--fetch` e sem cache, use palavras estimadas a partir de `prepared.segments` (`timingQuality: 'estimated'`). A tarefa 13 manda esses itens para revisão.
 4. **Metadados:** com `--fetch`, atualize em lotes de 50 por `videos.list` (`part: 'snippet,contentDetails,status,player'`, 1 unidade de cota por lote): `categoryId`, `defaultAudioLanguage` e o resultado de `assessShortsFormat`, como `auditShorts()` já faz.
-5. **Refazer** via `prepare(...)` com `timedWords`. Itens que passarem a falhar (aula de inglês, velocidade inválida etc.) vão para `.state/rejected/<id>.json` com o motivo, e `state.processed[id] = 'rejected'`. Nada é apagado.
+5. **Refazer** via `prepare(...)` com `timedWords`. Itens que passarem a falhar (velocidade inválida, legenda insuficiente etc.) vão para `.state/rejected/<id>.json` com o motivo, e `state.processed[id] = 'rejected'`. Nada é apagado.
 6. **Relatório** (sempre, inclusive em `--dry-run`):
    - níveis antes × depois;
    - p50/p90 de palavras e segundos por frase, por nível;

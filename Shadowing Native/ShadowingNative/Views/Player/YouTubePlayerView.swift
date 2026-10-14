@@ -31,6 +31,7 @@ final class YouTubePlayerController {
     private(set) var playbackError: String?
     private(set) var playbackRate = 1.0
     @ObservationIgnored private var playbackAllowed = true
+    @ObservationIgnored private var lastAutomaticRetry: Date?
     func connect(_ webView: WKWebView) {
         self.webView = webView
     }
@@ -65,7 +66,7 @@ final class YouTubePlayerController {
         isPlaybackRequested = true
         playbackError = nil
         if let activePhrase {
-            if wasWaiting || hasReachedPhraseEnd || currentTime < activePhrase.start || currentTime >= activePhrase.end {
+            if wasWaiting || hasReachedPhraseEnd || currentTime < activePhrase.start || currentTime >= playbackEnd(of: activePhrase) {
                 play(phrase: activePhrase)
             } else {
                 configureRange(for: activePhrase)
@@ -103,7 +104,7 @@ final class YouTubePlayerController {
         revision += 1
         state = .buffering
         guard isReady else { return }
-        evaluate("playShadowingRange(\(phrase.start), \(phrase.end), \(revision), \(endAdvanceMilliseconds));")
+        evaluate("playShadowingRange(\(phrase.start), \(playbackEnd(of: phrase)), \(revision), \(endAdvanceMilliseconds));")
     }
 
     func stopLoop() {
@@ -128,6 +129,12 @@ final class YouTubePlayerController {
             evaluate("setPlaybackAllowed(\(playbackAllowed ? "true" : "false"));")
 #if DEBUG
             evaluate("shadowingTimingDiagnostics = true;")
+            // Só para testes: dispara um erro do player para conferir a nova tentativa automática.
+            if let option = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("--simulate-playback-error=") }),
+               let code = option.split(separator: "=").last {
+                let value = Int(code).map(String.init) ?? "'\(code)'"
+                evaluate("setTimeout(function(){ send({type:'error', value:\(value)}); }, 6000);")
+            }
 #endif
             if isPlaybackRequested { play() }
         case "time":
@@ -151,7 +158,7 @@ final class YouTubePlayerController {
             let pauseLatency = number(message["pauseLatencyMilliseconds"]) ?? -1
             let rate = number(message["playbackRate"]) ?? 1
             Logger(subsystem: "ShadowingNative", category: "PlaybackTiming")
-                .debug("phase=\(phase, privacy: .public) start=\(phrase.start) sourceEnd=\(sourceEnd) effectiveEnd=\(effectiveEnd) advanceMs=\(self.endAdvanceMilliseconds) requestTime=\(observedRequest) estimate=\(estimatedRequest) pausedTime=\(observedPause) pauseLatencyMs=\(pauseLatency) rate=\(rate) wordTiming=\(phrase.endingHasWordTiming) segments=\(phrase.sourceSegmentCount)")
+                .debug("phase=\(phase, privacy: .public) start=\(phrase.start) phraseEnd=\(phrase.end) sourceEnd=\(sourceEnd) effectiveEnd=\(effectiveEnd) advanceMs=\(self.endAdvanceMilliseconds) requestTime=\(observedRequest) estimate=\(estimatedRequest) pausedTime=\(observedPause) pauseLatencyMs=\(pauseLatency) rate=\(rate) wordTiming=\(phrase.endingHasWordTiming) segments=\(phrase.sourceSegmentCount)")
 #endif
         case "state":
             if let rawValue = number(message["value"]).map(Int.init),
@@ -171,8 +178,21 @@ final class YouTubePlayerController {
         case "rate":
             playbackRate = max(0.25, number(message["value"]) ?? 1)
         case "error":
+            let code = message["value"].map { "\($0)" } ?? ""
+#if DEBUG
+            Logger(subsystem: "ShadowingNative", category: "PlaybackTiming")
+                .debug("phase=error value=\(code, privacy: .public)")
+#endif
+            // Falhas passageiras (busca ignorada durante um redimensionamento, erro 5 do player HTML5)
+            // costumam passar numa segunda tentativa: tenta sozinho uma vez antes de mostrar o erro.
+            if Self.isTransientError(code), let phrase = activePhrase, playbackAllowed,
+               lastAutomaticRetry.map({ Date().timeIntervalSince($0) > 10 }) ?? true {
+                lastAutomaticRetry = Date()
+                play(phrase: phrase)
+                return
+            }
             pause()
-            playbackError = "Não foi possível reproduzir este trecho. Toque em reproduzir para tentar novamente."
+            playbackError = Self.errorMessage(for: code)
         default:
             break
         }
@@ -208,7 +228,15 @@ final class YouTubePlayerController {
 
     private func configureRange(for phrase: ShadowingPhrase) {
         revision += 1
-        evaluate("setShadowingRange(\(phrase.start), \(phrase.end), \(revision), \(endAdvanceMilliseconds));")
+        evaluate("setShadowingRange(\(phrase.start), \(playbackEnd(of: phrase)), \(revision), \(endAdvanceMilliseconds));")
+    }
+
+    /// Ponto de pausa: `playbackEnd` evita tocar o começo da palavra seguinte (ver `PhraseBoundary`).
+    private func playbackEnd(of phrase: ShadowingPhrase) -> Double {
+#if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--disable-safe-end") { return phrase.end }
+#endif
+        return phrase.playbackEnd ?? phrase.end
     }
 
     private var endAdvanceMilliseconds: Int {
@@ -221,6 +249,18 @@ final class YouTubePlayerController {
 #else
         return 0
 #endif
+    }
+
+    static func isTransientError(_ code: String) -> Bool {
+        code == "seek-timeout" || code == "5"
+    }
+
+    static func errorMessage(for code: String) -> String {
+        switch code {
+        case "100": "Este vídeo foi removido ou está indisponível no YouTube."
+        case "101", "150": "O dono deste vídeo não permite reproduzi-lo fora do YouTube."
+        default: "Não foi possível reproduzir este trecho. Toque em reproduzir para tentar novamente."
+        }
     }
 
     private func cancelWaitingPeriod() {

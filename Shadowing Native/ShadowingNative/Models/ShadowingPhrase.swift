@@ -8,8 +8,63 @@ struct ShadowingPhrase: Identifiable, Hashable, Sendable {
     let sourceSegmentCount: Int
     var needsExpandedPractice = false
     var endingHasWordTiming = false
+    /// Onde o player deve pausar. Fica antes de `end` quando a próxima palavra começa colada ao fim da frase.
+    var playbackEnd: Double? = nil
 
     var duration: Double { end - start }
+}
+
+/// A legenda automática do YouTube só marca o início de cada palavra, então o fim de uma frase costuma ser
+/// exatamente o início da palavra seguinte (96% das frases do catálogo). Como o player sempre pausa um pouco
+/// depois do pedido, pausar em `end` deixa vazar o começo dessa palavra. Este cálculo recua o ponto de pausa
+/// sem cortar a última palavra da frase.
+enum PhraseBoundary {
+    /// Distância mantida antes do início da palavra seguinte.
+    static let nextWordMargin = 0.12
+    /// Margem mínima aceita quando a última palavra é curta demais para a margem cheia.
+    static let tightMargin = 0.04
+
+    static func applyingPlaybackEnds(to phrases: [ShadowingPhrase], segments: [YouTubeTranscriptSegment]) -> [ShadowingPhrase] {
+        let ordered = segments.sorted { $0.start < $1.start }
+        return phrases.map { phrase in
+            var phrase = phrase
+            phrase.playbackEnd = playbackEnd(for: phrase, segments: ordered)
+            return phrase
+        }
+    }
+
+    static func playbackEnd(for phrase: ShadowingPhrase, segments ordered: [YouTubeTranscriptSegment]) -> Double? {
+        let tolerance = 0.005
+        guard let next = ordered.first(where: { $0.start >= phrase.end - tolerance && $0.start > phrase.start + tolerance }) else {
+            return nil
+        }
+        let gapToNext = next.start - phrase.end
+        guard gapToNext < nextWordMargin else { return nil }
+        let last = ordered.last { $0.start >= phrase.start - tolerance && $0.start < phrase.end - tolerance }
+        let lastStart = last?.start ?? phrase.start
+        let lastWord = last?.text.split(separator: " ").last.map(String.init) ?? ""
+        // A última palavra precisa de pelo menos esse tempo para ser ouvida inteira.
+        let minimumEnd = lastStart + max(0.18, Double(syllables(lastWord)) * 0.11)
+        let comfortable = next.start - nextWordMargin
+        let tight = next.start - tightMargin
+        let end = comfortable >= minimumEnd ? comfortable : min(minimumEnd, tight)
+        guard end > phrase.start + 0.1 else { return nil }
+        return min(phrase.end, (end * 1000).rounded() / 1000)
+    }
+
+    static func syllables(_ word: String) -> Int {
+        let letters = word.lowercased().filter { $0.isASCII && $0.isLetter }
+        guard !letters.isEmpty else { return 0 }
+        var groups = 0
+        var previousWasVowel = false
+        for character in letters {
+            let isVowel = "aeiouy".contains(character)
+            if isVowel && !previousWasVowel { groups += 1 }
+            previousWasVowel = isVowel
+        }
+        let silentE = letters.count > 2 && letters.hasSuffix("e") && !letters.hasSuffix("le") && groups > 1 ? 1 : 0
+        return max(1, max(groups, 1) - silentE)
+    }
 }
 
 enum ExerciseMode: String, CaseIterable, Identifiable, Sendable {

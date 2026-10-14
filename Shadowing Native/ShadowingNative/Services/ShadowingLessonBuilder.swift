@@ -54,7 +54,7 @@ struct ShadowingLessonBuilder: Sendable {
         if let current { groups.append(current) }
         groups = repairTightBoundaries(repairShortGroups(groups))
 
-        return groups.enumerated().compactMap { index, group in
+        let phrases = groups.enumerated().compactMap { index, group -> ShadowingPhrase? in
             guard !group.text.isEmpty else { return nil }
             let nextGroup = index + 1 < groups.count ? groups[index + 1] : nil
             let nextStart = nextGroup?.start
@@ -71,6 +71,7 @@ struct ShadowingLessonBuilder: Sendable {
                 endingHasWordTiming: group.lastSegmentHasWordTiming
             )
         }
+        return PhraseBoundary.applyingPlaybackEnds(to: phrases, segments: normalized)
     }
 
     private func fits(text: String, duration: Double) -> Bool {

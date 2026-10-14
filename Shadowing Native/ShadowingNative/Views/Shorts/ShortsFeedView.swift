@@ -19,7 +19,6 @@ struct ShortsFeedView: View {
     @State private var refreshID = 0
     @State private var discoveryRequestID = UUID()
     @State private var isTypingResponse = false
-    @State private var emptyBatchCount = 0
     @State private var pendingNextFromID: String?
     @State private var isSearchPresented = false
     @State private var pinnedShortIDs: Set<String> = []
@@ -47,6 +46,7 @@ struct ShortsFeedView: View {
                             isVisible: visibleItemID == item.id,
                             preparedTranscript: preparedLessons[item.videoID]?.transcript ?? previewTranscript,
                             preparedPhrases: preparedLessons[item.videoID]?.phrases,
+                            isLayoutPreview: preparedLessons[item.videoID] == nil && previewTranscript != nil,
                             onShuffle: shuffleFeed,
                             onSearch: { isSearchPresented = true },
                             onSwipe: { direction in movePage(from: item.id, by: direction) },
@@ -88,10 +88,14 @@ struct ShortsFeedView: View {
                     Image(systemName: isDiscovering ? "sparkle.magnifyingglass" : "rectangle.portrait.slash")
                         .font(.largeTitle)
                         .foregroundStyle(ShadowingTheme.blue)
-                    Text(isDiscovering ? "Buscando Shorts no seu nível…" : "Ainda não há Shorts adequados para este nível e estes temas.")
+                    Text(isDiscovering ? "Buscando Shorts no seu nível…" : "Ainda não há Shorts prontos para o seu nível.")
                         .font(.headline)
                         .multilineTextAlignment(.center)
                     if !isDiscovering {
+                        Text("Use a lupa para buscar um assunto ou canal.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                         Button("Buscar Shorts ou canais", systemImage: "magnifyingglass") { isSearchPresented = true }
                             .buttonStyle(.borderedProminent)
                         Button("Buscar novamente") { refreshID += 1 }
@@ -107,10 +111,8 @@ struct ShortsFeedView: View {
                 VStack(spacing: 5) {
                     Text(discoveryNotice)
                         .foregroundStyle(.secondary)
-                    if !isDiscovering, !items.isEmpty {
+                    if !isDiscovering, !items.isEmpty, canLoadMore {
                         Button("Buscar mais Shorts") {
-                            canLoadMore = true
-                            emptyBatchCount = 0
                             Task { await discoverShorts() }
                         }
                         .fontWeight(.semibold)
@@ -177,7 +179,6 @@ struct ShortsFeedView: View {
             discoveryRequestID = UUID()
             isDiscovering = false
             canLoadMore = true
-            emptyBatchCount = 0
             isTypingResponse = false
             catalog = []
             pinnedShortIDs = []
@@ -294,7 +295,9 @@ struct ShortsFeedView: View {
                     approved = try await sharedCatalog.nextPage(for: appModel.profile)
                 } catch {
                     sharedCatalog.markUnavailable()
-                    approved = []
+                    discoveryNotice = "Não foi possível carregar os Shorts. Verifique a conexão e tente novamente."
+                    pendingNextFromID = nil
+                    return
                 }
                 guard !Task.isCancelled, discoveryRequestID == requestID else { return }
                 for lesson in approved where !catalog.contains(where: { $0.videoID == lesson.item.videoID }) {
@@ -307,45 +310,17 @@ struct ShortsFeedView: View {
                     rankFeed(resetPosition: items.isEmpty)
                     discoveryNotice = nil
                     let currentIndex = items.firstIndex { $0.id == visibleItemID } ?? 0
-                    shouldContinue = items.count - currentIndex <= 4
-                    if !shouldContinue { return }
+                    shouldContinue = sharedCatalog.hasMore && (items.count - currentIndex <= 4)
+                    return
                 }
-                if sharedCatalog.hasMore { shouldContinue = true; return }
-            }
-            let batch = try await ShortsDiscoveryService.shared.discoverBatch(
-                for: appModel.profile,
-                feedback: progressStore.shortFeedback,
-                channels: progressStore.followedShortChannels,
-                searches: progressStore.recentShortSearches,
-                excluding: Set(catalog.map(\.videoID)),
-                limit: items.isEmpty ? 1 : 3
-            )
-            guard !Task.isCancelled, discoveryRequestID == requestID else { return }
-            let discovered = batch.items
-            if discovered.isEmpty {
-                emptyBatchCount += 1
-                canLoadMore = batch.hasMoreCandidates
-                shouldContinue = canLoadMore && emptyBatchCount < 2
-                discoveryNotice = shouldContinue ? nil : (batch.hasMoreCandidates
-                    ? "Ainda estamos procurando Shorts adequados ao seu nível e temas."
-                    : "Não há mais Shorts verificados por enquanto.")
-                if !shouldContinue { pendingNextFromID = nil }
-            } else {
-                emptyBatchCount = 0
-                catalog.append(contentsOf: discovered)
-                Task { await ShortCatalogSignals.suggest(discovered.map(\.videoID)) }
-                rankFeed(resetPosition: items.isEmpty)
-                if let pendingNextFromID,
-                   visibleItemID == pendingNextFromID,
-                   let index = items.firstIndex(where: { $0.id == pendingNextFromID }),
-                   items.indices.contains(index + 1) {
-                    withAnimation(.easeOut(duration: 0.25)) { visiblePage = items[index + 1].id }
-                    self.pendingNextFromID = nil
+                if sharedCatalog.hasMore {
+                    shouldContinue = true
+                    return
                 }
-                discoveryNotice = nil
-                let currentIndex = items.firstIndex { $0.id == visibleItemID } ?? 0
-                shouldContinue = items.count - currentIndex <= 2
             }
+            canLoadMore = false
+            pendingNextFromID = nil
+            discoveryNotice = items.isEmpty ? nil : "Você viu todos os Shorts do seu nível por hoje. Novos chegam todos os dias."
         } catch {
             guard !Task.isCancelled, discoveryRequestID == requestID else { return }
             discoveryNotice = error.localizedDescription
@@ -369,6 +344,14 @@ private struct ShortLessonPage: View {
     let isVisible: Bool
     let preparedTranscript: YouTubeTranscript?
     let preparedPhrases: [ShadowingPhrase]?
+    /// Só a auditoria de layout troca o vídeo por um retângulo; aulas prontas do catálogo tocam o YouTube.
+    let isLayoutPreview: Bool
+
+    /// `item.topic` vem do primeiro tema de um Set (ordem aleatória); mostra um tema em comum com o perfil.
+    private var displayTopic: String {
+        item.interests.intersection(appModel.profile.interests)
+            .sorted { $0.rawValue < $1.rawValue }.first?.title ?? item.topic
+    }
     let onShuffle: () -> Void
     let onSearch: () -> Void
     let onSwipe: (Int) -> Void
@@ -452,7 +435,7 @@ private struct ShortLessonPage: View {
             if isVisible {
                 await loadTranscriptIfNeeded()
 #if DEBUG && targetEnvironment(simulator)
-                if preparedTranscript != nil {
+                if isLayoutPreview {
                     let arguments = ProcessInfo.processInfo.arguments
                     isTranslationVisible = arguments.contains("--audit-show-translation")
                     if arguments.contains("--audit-active-listening") { selectActiveListeningMode() }
@@ -513,7 +496,7 @@ private struct ShortLessonPage: View {
                     .font(.caption2.bold())
                     .tracking(1.5)
                     .foregroundStyle(ShadowingTheme.blue)
-                Text("\(item.level.title) • \(item.topic)")
+                Text("\(item.level.title) • \(displayTopic)")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -570,7 +553,7 @@ private struct ShortLessonPage: View {
 
     private func player(height: CGFloat) -> some View {
         Group {
-            if preparedTranscript != nil {
+            if isLayoutPreview {
                 ZStack {
                     LinearGradient(colors: [.black, ShadowingTheme.blue.opacity(0.35)], startPoint: .top, endPoint: .bottom)
                     VStack(spacing: 12) {
@@ -1062,9 +1045,13 @@ private struct ShortsSearchView: View {
                 .padding(20)
             }
             .scrollDismissesKeyboard(.interactively)
+            .opaqueTopScrollEdge()
             .background(ShadowingTheme.ink.ignoresSafeArea())
             .navigationTitle("Buscar Shorts")
             .navigationBarTitleDisplayMode(.inline)
+            // Sem fundo, o conteúdo rolado passava por baixo do título e as letras se sobrepunham.
+            .toolbarBackground(ShadowingTheme.ink, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Fechar") { dismiss() }

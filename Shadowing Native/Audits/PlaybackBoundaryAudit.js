@@ -131,6 +131,37 @@ manual.context.playShadowingRange(0, 2, 7, 0);
 manual.context.monitorShadowingRange();
 assert.equal(manual.calls.play, 2);
 
+// O YouTube às vezes ignora o seekTo (ex.: player sendo redimensionado): o pedido é repetido a cada 1,5 s.
+const ignored = makeHarness();
+ignored.position(40);
+ignored.context.playShadowingRange(10, 12, 8, 0);
+assert.equal(ignored.calls.seek.length, 1);
+ignored.position(40);
+ignored.wall(1000);
+ignored.context.monitorShadowingRange();
+assert.equal(ignored.calls.seek.length, 1, 'não repete antes de 1,5 s');
+ignored.position(40);
+ignored.wall(1600);
+ignored.context.monitorShadowingRange();
+assert.equal(ignored.calls.seek.length, 2, 'repete a busca ignorada');
+assert.equal(ignored.calls.play, 0);
+ignored.position(10);
+ignored.wall(1700);
+ignored.context.monitorShadowingRange();
+assert.equal(ignored.calls.play, 1, 'toca quando a busca finalmente chega ao início');
+assert.equal(ignored.messages.filter(message => message.type === 'error').length, 0);
+
+const stuck = makeHarness();
+stuck.position(40);
+stuck.context.playShadowingRange(10, 12, 9, 0);
+for (let wall = 500; wall <= 8500; wall += 500) {
+  stuck.position(40);
+  stuck.wall(wall);
+  stuck.context.monitorShadowingRange();
+}
+assert.ok(stuck.calls.seek.length >= 5, 'várias novas tentativas antes de desistir');
+assert.equal(stuck.messages.filter(message => message.value === 'seek-timeout').length, 1, 'desiste só depois de 8 s');
+
 assert.ok(!scriptSource.includes('setVolume'));
 assert.ok(!scriptSource.includes('fade'));
-console.log('PASS boundary timing: zero/early cutoff, pause acknowledgment, 1.5x playback, replacement, buffering, short ranges and manual pause');
+console.log('PASS boundary timing: zero/early cutoff, pause acknowledgment, 1.5x playback, replacement, buffering, short ranges, manual pause and ignored-seek retry');

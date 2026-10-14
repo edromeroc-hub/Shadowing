@@ -1,4 +1,4 @@
-# 08: Nível relativo ao conteúdo nativo (regras locais)
+# 10: Nível relativo ao conteúdo nativo (regras locais)
 
 ## Objetivo
 Substituir `classify()` (régua absoluta) por uma **pontuação de dificuldade 0–100** feita com características medidas no próprio vídeo. O nível sai do **percentil** dessa pontuação dentro do catálogo: ~30% iniciante, ~40% intermediário, ~30% avançado. Cada frase também recebe uma dificuldade (fácil/média/difícil).
@@ -7,7 +7,7 @@ Substituir `classify()` (régua absoluta) por uma **pontuação de dificuldade 0
 `classify` em `curator/quality.mjs` e `ShortDifficultyEstimator.swift` usam limites pensados para conteúdo didático: ≥ 165 palavras/min = avançado. Fala nativa quase sempre passa disso: 210 de 219 candidatos (96%) saíram "avançado". Assim o iniciante fica sem conteúdo nativo, e o app acabava buscando aula de inglês.
 
 ## Depende de
-Tarefa 05 (palavras e frases por nível).
+Tarefa 06 (palavras e frases por nível).
 
 ## Arquivos permitidos
 - `curator/difficulty.mjs` (novo), `curator/difficulty.test.mjs` (novo)
@@ -79,10 +79,10 @@ Quando houver `words`:
 
 Mantenha a checagem de sanidade: rejeite com `'Legenda insuficiente ou velocidade inválida'` se a duração for < 12 s ou > 185 s, se houver < 30 palavras ou se a velocidade for > 300 palavras/min (música ou legenda quebrada). `classify` fica só para itens antigos sem `words`.
 
-`publishedPayload` (tarefa 06) passa a incluir `phraseDifficultyByLevel` e `difficulty.score`. Em `CatalogPayload.swift`, aceite `phraseDifficultyByLevel` como **opcional** (a tarefa 10 usa).
+`publishedPayload` (tarefa 08) passa a incluir `phraseDifficultyByLevel` e `difficulty.score`. Em `CatalogPayload.swift`, aceite `phraseDifficultyByLevel` como **opcional** (a tarefa 12 usa).
 
 ### D. Calibração
-`npm run calibrate-levels` (`scripts/calibrate-levels.mjs`) lê `.state/review` e `.state/published` (só leitura). Para cada item, usa `words` se houver; senão, palavras estimadas a partir de `segments`, como no relatório da tarefa 05. Depois:
+`npm run calibrate-levels` (`scripts/calibrate-levels.mjs`) lê `.state/review` e `.state/published` (só leitura). Para cada item, usa `words` se houver; senão, palavras estimadas a partir de `segments`, como no relatório da tarefa 06. Depois:
 - calcula as pontuações;
 - grava `data/level-thresholds.json` com `{ beginnerMax: p30, intermediateMax: p70, sampleSize, calibratedAt }`;
 - imprime a distribuição antiga (`level` gravado) × a nova.

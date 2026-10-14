@@ -37,7 +37,7 @@ Exporte `buildTimedWords({ manual, asr })` → `{ words, timingQuality, matchRat
 
 ### B. Integração
 - `quality.mjs → prepare(...)` aceita `timedWords` e `timingQuality` opcionais e os copia para o resultado (`words`, `timingQuality`). Se vierem, `rawSegments` = palavras convertidas em segmentos `{ text, start, end, hasWordTiming: timing !== 'estimated' }`.
-- `curator.mjs → inspect(...)`: `const timed = buildTimedWords(captions)` e passe para `prepare`. O resto do fluxo continua igual até a tarefa 05.
+- `curator.mjs → inspect(...)`: `const timed = buildTimedWords(captions)` e passe para `prepare`. O resto do fluxo continua igual até a tarefa 06.
 
 ### C. Testes (`align.test.mjs`)
 1. Manual `"Hello, how are you doing today?"` (um segmento de 0 a 3 s, sem tempo por palavra) + automática com 6 palavras em tempos conhecidos → 6 palavras com pontuação, tempos da automática, `aligned`, `matchRatio` 1.
@@ -52,5 +52,5 @@ Exporte `buildTimedWords({ manual, asr })` → `{ words, timingQuality, matchRat
 - `scripts/verify.sh` → "Tudo passou."
 
 ## Não fazer
-- Não mudar `buildPhrases` nem `classify` (tarefas 05 e 08).
+- Não mudar `buildPhrases` nem `classify` (tarefas 06 e 10).
 - Não acessar a rede.

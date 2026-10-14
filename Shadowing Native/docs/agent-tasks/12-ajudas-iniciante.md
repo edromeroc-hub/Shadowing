@@ -1,12 +1,12 @@
-# 10: Ajudas para o iniciante (0,75× e pular frases difíceis)
+# 12: Ajudas para o iniciante (0,75× e pular frases difíceis)
 
 ## Objetivo
 O iniciante pratica com conteúdo **nativo**, mas com duas ajudas:
 1. velocidade padrão **0,75×**, com um botão para alternar 0,75× / 1×;
-2. opção **"Pular frases difíceis"**, que usa a dificuldade por frase da tarefa 08.
+2. opção **"Pular frases difíceis"**, que usa a dificuldade por frase da tarefa 10.
 
 ## Depende de
-Tarefas 06 (decodificador v2) e 08 (`phraseDifficultyByLevel` opcional).
+Tarefas 08 (decodificador v2) e 10 (`phraseDifficultyByLevel` opcional).
 
 ## Arquivos permitidos
 - `ShadowingNative/Views/Player/YouTubePlayerView.swift`

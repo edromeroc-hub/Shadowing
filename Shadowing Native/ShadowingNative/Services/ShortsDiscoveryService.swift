@@ -341,46 +341,52 @@ actor ShortsDiscoveryService {
             guard let videoID = result.id.videoId else { return false }
             return !seenIDs.contains(videoID)
         }
-        return await withTaskGroup(of: VideoSuggestion?.self) { group in
-            for result in candidates {
-                group.addTask {
-                    guard let videoID = result.id.videoId,
-                          let transcript = try? await self.transcriptLoader(videoID),
-                          transcript.languageCode.lowercased().hasPrefix("en"),
-                          interest.matchesContent(title: result.snippet.title, transcript: transcript),
-                          let firstStart = transcript.segments.first?.start else { return nil }
-                    let sample = YouTubeTranscript(
-                        videoID: videoID,
-                        title: transcript.title,
-                        channel: transcript.channel,
-                        languageCode: transcript.languageCode,
-                        source: transcript.source,
-                        segments: Array(transcript.segments.prefix { $0.start < firstStart + 120 })
-                    )
-                    guard ShortDifficultyEstimator.estimate(transcript: sample, titleHint: result.snippet.title) == level else { return nil }
-                    return VideoSuggestion(
-                        videoID: videoID,
-                        title: result.snippet.title,
-                        creator: result.snippet.channelTitle,
-                        source: .youtube,
-                        durationMinutes: nil,
-                        level: level,
-                        interests: [interest],
-                        goals: [.listening],
-                        accent: .blue,
-                        hook: "Inglês real sobre \(interest.title.lowercased())"
-                    )
+        // No máximo 3 legendas por vez: rajadas maiores levam o YouTube a bloquear (HTTP 429).
+        // A tela usa só os 2 primeiros por tema, então para assim que tiver 2.
+        var verified: [VideoSuggestion] = []
+        for batchStart in stride(from: 0, to: candidates.count, by: 3) {
+            let batch = Array(candidates[batchStart..<min(batchStart + 3, candidates.count)])
+            let found = await withTaskGroup(of: (Int, VideoSuggestion?).self) { group in
+                for (offset, result) in batch.enumerated() {
+                    group.addTask { (offset, await self.verifyVideo(result, interest: interest, level: level)) }
                 }
+                var items: [(Int, VideoSuggestion?)] = []
+                for await item in group { items.append(item) }
+                return items.sorted { $0.0 < $1.0 }.compactMap(\.1)
             }
-            var verified: [VideoSuggestion] = []
-            for await item in group {
-                if let item { verified.append(item) }
-            }
-            let resultOrder = Dictionary(candidates.enumerated().compactMap { index, result -> (String, Int)? in
-                result.id.videoId.map { ($0, index) }
-            }, uniquingKeysWith: { first, _ in first })
-            return verified.sorted { resultOrder[$0.videoID, default: 0] < resultOrder[$1.videoID, default: 0] }
+            verified.append(contentsOf: found)
+            if verified.count >= 2 || Task.isCancelled { break }
         }
+        return verified
+    }
+
+    private func verifyVideo(_ result: SearchResult, interest: LearningInterest, level: EnglishLevel) async -> VideoSuggestion? {
+        guard let videoID = result.id.videoId,
+              let transcript = try? await transcriptLoader(videoID),
+              transcript.languageCode.lowercased().hasPrefix("en"),
+              interest.matchesContent(title: result.snippet.title, transcript: transcript),
+              let firstStart = transcript.segments.first?.start else { return nil }
+        let sample = YouTubeTranscript(
+            videoID: videoID,
+            title: transcript.title,
+            channel: transcript.channel,
+            languageCode: transcript.languageCode,
+            source: transcript.source,
+            segments: Array(transcript.segments.prefix { $0.start < firstStart + 120 })
+        )
+        guard ShortDifficultyEstimator.estimate(transcript: sample, titleHint: result.snippet.title) == level else { return nil }
+        return VideoSuggestion(
+            videoID: videoID,
+            title: result.snippet.title,
+            creator: result.snippet.channelTitle,
+            source: .youtube,
+            durationMinutes: nil,
+            level: level,
+            interests: [interest],
+            goals: [.listening],
+            accent: .blue,
+            hook: "Inglês real sobre \(interest.title.lowercased())"
+        )
     }
 
     private func searchVideos(
@@ -492,9 +498,10 @@ actor ShortsDiscoveryService {
 
     func searchChannels(query text: String) async throws -> [ShortsChannelResult] {
         guard let key = apiKey, !key.isEmpty, !key.contains("$(") else { throw DiscoveryError.missingAPIKey }
-        let query = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
-        guard query.count >= 2 else { return [] }
-        let response = try await searchDirect(query: query, type: "channel", key: key)
+        let typed = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
+        guard typed.count >= 2 else { return [] }
+        // Mesma tradução da busca de Shorts: "viagem" trazia só canais brasileiros, sem legenda em inglês.
+        let response = try await searchDirect(query: Self.youtubeQuery(for: typed), type: "channel", key: key)
         return response.items.compactMap { result in
             guard let id = result.id.channelId, !id.isEmpty else { return nil }
             return ShortsChannelResult(id: id, title: result.snippet.title)

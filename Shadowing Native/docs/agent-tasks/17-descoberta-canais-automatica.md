@@ -1,4 +1,4 @@
-# 14: Descoberta automática de canais nativos dos EUA
+# 17: Descoberta automática de canais nativos dos EUA
 
 ## Objetivo
 O curador passa a **encontrar canais novos sozinho**, sem o dono indicar um por um:
@@ -11,7 +11,7 @@ O curador passa a **encontrar canais novos sozinho**, sem o dono indicar um por 
 Hoje `seeds.json` tem 18 canais escolhidos à mão; para crescer, o dono precisa indicar canais. O objetivo é o "Short que o americano rola no dia a dia": talk show, entrevista de rua, humor, podcast, esporte, culinária.
 
 ## Depende de
-Tarefas 02, 11 e 13.
+Tarefas 13 e 16.
 
 ## Arquivos permitidos
 - `curator/discovery.mjs`, `curator/discovery.test.mjs`
@@ -30,7 +30,6 @@ Tarefas 02, 11 e 13.
    `nextGenreQuery(state)` faz o rodízio com `state.genreIndex`.
 2. `POPULAR_CATEGORY_IDS = ['23', '24', '17', '22', '26']` (Comedy, Entertainment, Sports, People & Blogs, Howto & Style).
 3. `evaluateChannel(channel)` recebe um item de `channels.list` (`snippet`, `statistics`) e retorna `{ ok, reason }`. Reprova se:
-   - `isTeachingContent({ title: snippet.description?.slice(0, 300) ?? '', channel: snippet.title })`;
    - `snippet.country` existe e é diferente de `'US'`;
    - `snippet.country` está ausente **e** `snippet.defaultLanguage` não começa com `en`;
    - `statistics.hiddenSubscriberCount !== true` e `Number(statistics.subscriberCount) < 50000`.
@@ -44,7 +43,7 @@ Tarefas 02, 11 e 13.
    - 1 chamada `videos.list` com `chart: 'mostPopular'`, `regionCode: 'US'`, `part: 'snippet,contentDetails'` por categoria de `POPULAR_CATEGORY_IDS`, mantendo só duração ≤ 180 s (`secondsFromDuration`);
    - junte os `channelId` que não estão em `seeds.json` nem em `.state/channel-blocklist.json`, e grave em `.state/channel-candidates.json` (`{ [channelID]: { firstSeenAt, source, query, hits } }`).
 3. **Avaliação:** `channels.list` (`part: 'snippet,statistics'`, até 50 IDs por chamada, 1 unidade) → `evaluateChannel`. Reprovados vão para `.state/channel-blocklist.json` com o motivo.
-4. **Prova:** para cada aprovado (no máximo 10 novos por dia), pegue a 1ª página de `listChannelVideos` (tarefa 13) e coloque os 5 primeiros vídeos em `state.pending`, com `source: 'probation'` e `channelID`. O `scan()` normal processa a fila; registre o resultado de cada um (`publishable` = sem motivos em `automaticReviewReasons`) em `.state/channel-candidates.json`.
+4. **Prova:** para cada aprovado (no máximo 10 novos por dia), pegue a 1ª página de `listChannelVideos` (tarefa 16) e coloque os 5 primeiros vídeos em `state.pending`, com `source: 'probation'` e `channelID`. O `scan()` normal processa a fila; registre o resultado de cada um (`publishable` = sem motivos em `automaticReviewReasons`) em `.state/channel-candidates.json`.
 5. **Decisão:** quando um canal tiver 5 resultados de prova, aplique `promotionDecision`.
    - Se promover: acrescente em `seeds.json` `{ interest, channelID, source: 'auto', addedAt }` (escrita atômica, como `saveJSON`) e registre `CANAL PROMOVIDO <id> <título>`.
    - Senão: mande para o blocklist.
@@ -53,7 +52,7 @@ Tarefas 02, 11 e 13.
 
 ### C. Testes (`discovery.test.mjs`)
 - O rodízio de `nextGenreQuery` volta ao início.
-- `evaluateChannel`: canal dos EUA grande passa; canal "English with X" reprova; país `BR` reprova; sem país e com `defaultLanguage: 'en-US'` passa; 10 mil inscritos reprova; inscritos ocultos passa.
+- `evaluateChannel`: canal dos EUA grande passa; país `BR` reprova; sem país e com `defaultLanguage: 'en-US'` passa; 10 mil inscritos reprova; inscritos ocultos passa.
 - `promotionDecision`: 3 de 5 promove com o tema mais frequente; 2 de 5 não; 4 resultados ainda não decide.
 - `demotionDecision`: 3 despublicados rebaixa; 8 de 20 escondidos rebaixa; 7 de 20 não.
 

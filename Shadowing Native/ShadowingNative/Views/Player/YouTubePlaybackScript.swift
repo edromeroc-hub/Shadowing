@@ -126,8 +126,15 @@ enum YouTubePlaybackScript {
           } else if (wallTime - shadowingRange.requestedAt > 8000) {
             pauseShadowing();
             send({type:'error', value:'seek-timeout'});
-          } else if (player.getPlayerState() === 1) {
-            player.pauseVideo();
+          } else {
+            if (player.getPlayerState() === 1) player.pauseVideo();
+            // O YouTube às vezes ignora um seekTo (por exemplo, enquanto o player muda de tamanho):
+            // repete o pedido a cada 1,5 s em vez de esperar o tempo-limite inteiro.
+            var lastSeek = shadowingRange.lastSeekAt || shadowingRange.requestedAt;
+            if (wallTime - lastSeek > 1500) {
+              shadowingRange.lastSeekAt = wallTime;
+              player.seekTo(shadowingRange.start, true);
+            }
           }
         }
         if (shadowingRange && !shadowingRange.seeking && player.getPlayerState() === 1) {

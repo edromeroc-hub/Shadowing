@@ -1,13 +1,13 @@
-# 07: App: a mesma segmentação no Swift (paridade com o curador)
+# 09: App: a mesma segmentação no Swift (paridade com o curador)
 
 ## Objetivo
-Reescrever `ShadowingLessonBuilder` com **exatamente** o algoritmo da tarefa 05. Vídeos abertos pela lupa ou por link importado são divididos no aparelho e precisam ficar iguais aos do catálogo.
+Reescrever `ShadowingLessonBuilder` com **exatamente** o algoritmo da tarefa 06. Vídeos abertos pela lupa ou por link importado são divididos no aparelho e precisam ficar iguais aos do catálogo.
 
 ## Por quê
 O builder atual só **junta** blocos de legenda: nunca divide um bloco longo, então legendas manuais de 2 linhas viram frases enormes (`needsExpandedPractice`). Ter duas lógicas diferentes também faz o mesmo vídeo ser dividido de um jeito no catálogo e de outro na lupa.
 
 ## Depende de
-Tarefas 05 (especificação e casos em `Audits/fixtures/segmentation/`) e 06.
+Tarefas 06 (especificação e casos em `Audits/fixtures/segmentation/`) e 08.
 
 ## Arquivos permitidos
 - `ShadowingNative/Services/ShadowingLessonBuilder.swift`

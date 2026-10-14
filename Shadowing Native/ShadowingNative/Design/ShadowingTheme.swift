@@ -68,3 +68,16 @@ extension View {
     }
 }
 
+
+extension View {
+    /// No iOS 26 a barra de navegação é de vidro e ignora `toolbarBackground`; sem o efeito "hard",
+    /// o conteúdo rolado aparece por baixo do título e do relógio.
+    @ViewBuilder
+    func opaqueTopScrollEdge() -> some View {
+        if #available(iOS 26.0, *) {
+            scrollEdgeEffectStyle(.hard, for: .top)
+        } else {
+            self
+        }
+    }
+}

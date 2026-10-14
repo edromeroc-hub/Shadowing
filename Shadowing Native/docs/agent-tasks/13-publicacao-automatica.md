@@ -1,4 +1,4 @@
-# 11: Publicação automática com amostragem
+# 13: Publicação automática com amostragem
 
 ## Objetivo
 O curador publica **sozinho** todo candidato que passar nos critérios automáticos, sem depender de "canal confiável". Um a cada 10 publicados vira **amostra** para o dono ouvir no painel, que ganha os botões **Manter** e **Despublicar**.
@@ -7,7 +7,7 @@ O curador publica **sozinho** todo candidato que passar nos critérios automáti
 Hoje há 0 publicados e 219 parados na revisão manual. `automaticReviewReasons` exige canal confiável (`trust-channel` após 3 publicações manuais) e recusa iniciantes. O feed (só catálogo, tarefa 01) fica vazio.
 
 ## Depende de
-Tarefas 02 (filtro de aula), 06 (v2) e 08 (nível com confiança).
+Tarefas 08 (v2) e 10 (nível com confiança).
 
 ## Arquivos permitidos
 - `curator/workflow.mjs`, `curator/workflow.test.mjs`
@@ -23,7 +23,7 @@ Em `curator.mjs → metadata(videoID)`, devolva também `categoryId: item.snippe
 ### B. Critérios: `automaticReviewReasons(prepared, metadata)`
 Remova o terceiro parâmetro (`trustedChannelIDs`) e atualize os chamadores (`curator.mjs`, `review-store.mjs`). Retorne a lista de motivos (vazia = publicável):
 1. `metadata.shortsFormatPassed !== true` → "Formato Short não verificado".
-2. `isTeachingContent({ title, channel })` → "Conteúdo de aula de inglês".
+2. *(sem filtro de aula de inglês: decisão do dono, 14/10/2026. Vídeos de professores são aceitos.)*
 3. Sem `prepared.words` **ou** `timingQuality === 'estimated'` → "Sem tempo real por palavra".
 4. Mais de 10% das frases do próprio nível com `timingEstimated` → "Muitos cortes interpolados".
 5. Algum nível de `phrasesByLevel` não passa em `phrasesArePractical` → "Trechos pouco práticos (<nível>)".

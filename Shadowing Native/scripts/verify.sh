@@ -22,6 +22,7 @@ step() {
 }
 
 step "curator npm test" zsh -c 'cd curator && npm test'
+step "curadoria-gemini npm test" zsh -c 'cd curadoria-gemini && npm test'
 step "recommendation audit" zsh Audits/run-recommendations.zsh
 step "segmentation audit" zsh Audits/run-segmentation-layout.zsh
 step "playback boundary audit" node Audits/PlaybackBoundaryAudit.js

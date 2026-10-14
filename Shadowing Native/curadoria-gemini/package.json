@@ -1,0 +1,13 @@
+{
+  "name": "shadowing-curadoria-gemini",
+  "private": true,
+  "type": "module",
+  "description": "Ferramentas para o Gemini no Antigravity fazer a curadoria de Shorts (Caminho B).",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.0"
+  }
+}

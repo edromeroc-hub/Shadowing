@@ -46,5 +46,35 @@ struct SegmentationLayoutAudit {
             print("PASS \(level.rawValue): \(phrases.count) bounded phrases, exact word order and source timestamps")
         }
         print("PASS segmentation regression checks")
+
+        // Fim seguro: pausar antes da palavra seguinte sem cortar a última palavra da frase.
+        func words(_ list: [(String, Double)]) -> [YouTubeTranscriptSegment] {
+            list.enumerated().map { index, item in
+                YouTubeTranscriptSegment(text: item.0, start: item.1, end: index + 1 < list.count ? list[index + 1].1 : item.1 + 0.4, hasWordTiming: true)
+            }
+        }
+        let contiguous = words([("I", 0), ("like", 0.5), ("this", 1.0), ("guy.", 1.5), ("This", 2.0), ("guy's", 2.4)])
+        let phrase = ShadowingPhrase(text: "I like this guy.", start: 0, end: 2.0, sourceSegmentCount: 4)
+        precondition(PhraseBoundary.playbackEnd(for: phrase, segments: contiguous) == 1.88, "margem antes da palavra seguinte")
+
+        let silence = words([("I", 0), ("like", 0.5), ("this", 1.0), ("guy.", 1.5), ("This", 2.5)])
+        let paused = ShadowingPhrase(text: "I like this guy.", start: 0, end: 2.0, sourceSegmentCount: 4)
+        precondition(PhraseBoundary.playbackEnd(for: paused, segments: silence) == nil, "com silêncio depois, o fim fica como está")
+
+        let shortLast = words([("I", 0), ("like", 0.5), ("this", 1.0), ("a", 1.9), ("lot", 2.0)])
+        let tight = ShadowingPhrase(text: "I like this a", start: 0, end: 2.0, sourceSegmentCount: 4)
+        precondition(PhraseBoundary.playbackEnd(for: tight, segments: shortLast) == 1.96, "última palavra curta usa a margem mínima")
+
+        let lastPhrase = ShadowingPhrase(text: "This guy's", start: 2.0, end: 2.8, sourceSegmentCount: 2)
+        precondition(PhraseBoundary.playbackEnd(for: lastPhrase, segments: contiguous) == nil, "sem palavra seguinte, sem ajuste")
+
+        let built = PhraseBoundary.applyingPlaybackEnds(to: [phrase, lastPhrase], segments: contiguous)
+        precondition(built.map(\.text) == [phrase.text, lastPhrase.text] && built.allSatisfy { ($0.playbackEnd ?? $0.end) <= $0.end && ($0.playbackEnd ?? $0.end) > $0.start })
+        precondition([("cat", 1), ("water", 2), ("beautiful", 3), ("make", 1), ("table", 2), ("rhythm", 1)].allSatisfy { PhraseBoundary.syllables($0.0) == $0.1 })
+
+        let timedTranscript = YouTubeTranscript(videoID: "fixture", title: "timed words", channel: "audit", languageCode: "en", source: "fixture", segments: timedWords)
+        let builderPhrases = ShadowingLessonBuilder(level: .intermediate).build(from: timedTranscript)
+        precondition(builderPhrases.dropLast().allSatisfy { $0.playbackEnd != nil && $0.playbackEnd! < $0.end }, "frases da lupa também recebem o fim seguro")
+        print("PASS playback end keeps a margin before the next word without cutting the last one")
     }
 }

@@ -80,7 +80,8 @@ private struct CatalogPayload: Decodable {
                 level: englishLevel, interests: topics,
                 creator: channel, channelID: channelID
             ),
-            transcript: transcript, phrases: preparedPhrases,
+            transcript: transcript,
+            phrases: PhraseBoundary.applyingPlaybackEnds(to: preparedPhrases, segments: transcript.segments),
             affinity: affinity ?? [:]
         )
     }
@@ -90,12 +91,23 @@ private struct CatalogPayload: Decodable {
 final class SharedShortCatalog {
     private var level: EnglishLevel?
     private var cursor: DocumentSnapshot?
+    // O Firestore devolve em ordem de ID. Sem um ponto de partida sorteado, todo aluno do mesmo perfil veria
+    // sempre os mesmos Shorts primeiro (IDs "-…", "0…"). Cada sessão começa num ID aleatório e depois dá a volta.
+    private var startID = SharedShortCatalog.randomDocumentID()
+    private var hasWrapped = false
     private(set) var hasMore = true
 
     func reset(for level: EnglishLevel) {
         self.level = level
         cursor = nil
+        startID = Self.randomDocumentID()
+        hasWrapped = false
         hasMore = true
+    }
+
+    private static func randomDocumentID() -> String {
+        let alphabet = Array("-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz")
+        return String((0..<11).map { _ in alphabet.randomElement()! })
     }
 
     func markUnavailable() {
@@ -112,16 +124,20 @@ final class SharedShortCatalog {
         guard hasMore else { return [] }
         var query: Query = Firestore.firestore().collection("approvedShorts")
             .whereField("level", isEqualTo: level.rawValue)
-            .limit(to: 30)
         let interests = profile.interests.map(\.rawValue).sorted()
         if !interests.isEmpty {
             query = query.whereField("interests", arrayContainsAny: interests)
         }
-        if let cursor { query = query.start(afterDocument: cursor) }
+        query = query.order(by: FieldPath.documentID()).limit(to: 30)
+        if let cursor {
+            query = query.start(afterDocument: cursor)
+        } else if !hasWrapped {
+            query = query.start(at: [startID])
+        }
+        if hasWrapped { query = query.end(before: [startID]) }
         let snapshot = try await query.getDocuments()
         cursor = snapshot.documents.last
-        hasMore = snapshot.documents.count == 30
-        return snapshot.documents.compactMap { document in
+        let lessons = snapshot.documents.compactMap { document -> PreparedShortLesson? in
             guard document.data()["status"] as? String == "approved",
                   let payload = document.data()["payload"] as? String,
                   let record = try? JSONDecoder().decode(CatalogPayload.self, from: Data(payload.utf8)),
@@ -129,5 +145,17 @@ final class SharedShortCatalog {
                   record.level == level.rawValue else { return nil }
             return record.preparedLesson()
         }
+        if snapshot.documents.count == 30 {
+            hasMore = true
+        } else if hasWrapped {
+            hasMore = false
+        } else {
+            // Chegou ao fim dos IDs: volta ao início e completa a página com os anteriores ao ponto de partida.
+            hasWrapped = true
+            cursor = nil
+            hasMore = true
+            return lessons + (try await nextPage(for: profile))
+        }
+        return lessons
     }
 }

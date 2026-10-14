@@ -1,4 +1,4 @@
-# 05: Curador: segmentação ótima por programação dinâmica
+# 06: Curador: segmentação ótima por programação dinâmica
 
 ## Objetivo
 Substituir o corte guloso (`buildPhrases` em `curator/quality.mjs`) por uma segmentação **ótima** sobre as palavras com tempo (tarefa 04). Ela escolhe, entre todas as divisões possíveis, a de menor custo: frases no tamanho certo para cada nível e limites em fim de frase, vírgula ou pausa de respiração, nunca depois de "the", "to", "my"… O resultado sai para os 3 níveis.
@@ -15,7 +15,7 @@ Tarefa 04 (`words` com `{ text, start, end, timing }`).
 - `Audits/fixtures/segmentation/*.json` (novos)
 - `curator/quality.mjs`, `curator/quality.test.mjs`, `curator/workflow.mjs`, `curator/workflow.test.mjs`
 
-## Especificação (seguir exatamente: o Swift da tarefa 07 vai reproduzir bit a bit)
+## Especificação (seguir exatamente: o Swift da tarefa 09 vai reproduzir bit a bit)
 
 ### Constantes
 ```js
@@ -158,4 +158,4 @@ Inclua também 3 casos reais, cada um com as **80 primeiras** palavras de candid
 - `scripts/verify.sh` → "Tudo passou."
 
 ## Não fazer
-- Não alterar o Swift (tarefa 07) nem `.state/review` (tarefa 12).
+- Não alterar o Swift (tarefa 09) nem `.state/review` (tarefa 15).

@@ -1,10 +1,10 @@
-# 06: Catálogo versão 2 (palavras com tempo + frases dos 3 níveis)
+# 08: Catálogo versão 2 (palavras com tempo + frases dos 3 níveis)
 
 ## Objetivo
 O documento publicado em `approvedShorts` passa a carregar as **palavras com tempo** e as frases **dos 3 níveis** (intervalos de índices de palavras). O app usa as frases do nível do aluno. Documentos v1 continuam funcionando.
 
 ## Depende de
-Tarefa 05 (`words`, `phrasesByLevel`, `SEGMENTATION_VERSION`).
+Tarefa 06 (`words`, `phrasesByLevel`, `SEGMENTATION_VERSION`).
 
 ## Arquivos permitidos
 - `curator/quality.mjs`, `curator/quality.test.mjs`, `curator/curator.mjs`

@@ -1,10 +1,10 @@
-# 09: Recalibrar o nível pelo uso ("Muito fácil" / "Muito difícil")
+# 11: Recalibrar o nível pelo uso ("Muito fácil" / "Muito difícil")
 
 ## Objetivo
 Os alunos já avaliam a dificuldade no menu do Short ("Muito fácil", "No meu ritmo", "Muito difícil"), mas esse voto só fica no aparelho. Esta tarefa envia o voto junto com o sinal que já vai ao Firestore. A agregação diária do Mac passa a **mover o vídeo de nível** quando houver evidência suficiente.
 
 ## Depende de
-Tarefa 08.
+Tarefa 10.
 
 ## Arquivos permitidos
 - `ShadowingNative/Services/ShortCatalogSignals.swift`
