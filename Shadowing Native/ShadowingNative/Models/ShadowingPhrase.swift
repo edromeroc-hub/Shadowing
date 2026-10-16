@@ -94,6 +94,9 @@ struct ActiveListeningExercise: Identifiable, Hashable, Sendable {
     let id: String
     let maskedText: String
     let blanks: [ListeningBlank]
+    let tokens: [String]
+
+    var maskedTokens: [String] { maskedText.split(whereSeparator: \.isWhitespace).map(String.init) }
 
     static func normalize(_ value: String) -> String {
         value
@@ -101,6 +104,46 @@ struct ActiveListeningExercise: Identifiable, Hashable, Sendable {
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             .replacingOccurrences(of: "[^\\p{L}\\p{N}']", with: "", options: .regularExpression)
             .lowercased()
+    }
+}
+
+struct ListeningExerciseProgress: Equatable, Sendable {
+    private(set) var solvedAnswers: [Int: String] = [:]
+    private(set) var rejectedChoices: [Int: Set<String>] = [:]
+    private(set) var attempts = 0
+
+    mutating func submit(_ response: String, for blank: ListeningBlank) -> Bool? {
+        guard solvedAnswers[blank.tokenIndex] == nil,
+              blank.choices.contains(response),
+              rejectedChoices[blank.tokenIndex]?.contains(response) != true else { return nil }
+        attempts += 1
+        let correct = blank.accepts(response)
+        if correct {
+            solvedAnswers[blank.tokenIndex] = response
+        } else {
+            rejectedChoices[blank.tokenIndex, default: []].insert(response)
+        }
+        return correct
+    }
+}
+
+enum RepeatPauseTiming {
+    static func duration(start: Double, end: Double, playbackRate: Double, extraPercent: Int) -> Double {
+        let extra = Double(min(100, max(0, extraPercent))) / 100
+        return max(0.8, max(0, end - start) / max(0.25, playbackRate) * (1 + extra))
+    }
+}
+
+struct ShortPracticeLayout {
+    let videoHeight: CGFloat
+    let contentHeight: CGFloat
+
+    init(height: CGFloat, width: CGFloat, headerHeight: CGFloat, panelChromeHeight: CGFloat, desiredContentHeight: CGFloat, editing: Bool) {
+        let available = max(1, height - headerHeight - panelChromeHeight - 27)
+        let desired = editing ? min(desiredContentHeight, 110) : min(desiredContentHeight, height * 0.43)
+        let minimumVideo = min(editing ? 96 : 120, max(1, available - 60))
+        contentHeight = max(1, min(max(60, desired), max(1, available - minimumVideo)))
+        videoHeight = max(1, min(width * 16 / 9, available - contentHeight))
     }
 }
 
@@ -161,7 +204,8 @@ struct ActiveListeningExerciseBuilder: Sendable {
         return ActiveListeningExercise(
             id: "\(phrase.id.uuidString)|\(blanks.map(\.tokenIndex))",
             maskedText: maskedTokens.joined(separator: " "),
-            blanks: blanks
+            blanks: blanks,
+            tokens: tokens
         )
     }
 

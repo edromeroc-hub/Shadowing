@@ -112,6 +112,9 @@ struct YouTubeImportView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { playerController.pause() }
         }
+        .onChange(of: appModel.profile.repeatPauseExtraPercent, initial: true) { _, percent in
+            playerController.repeatPauseExtraPercent = percent
+        }
         .onChange(of: playerController.state) { _, state in
             if state == .playing, let phrase = currentPhrase, let loadedVideoID {
                 progressStore.record(phrase: phrase, videoID: loadedVideoID)

@@ -312,16 +312,25 @@ struct ActiveListeningOptionsView: View {
 struct ActiveListeningExerciseView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(VocabularyStore.self) private var vocabularyStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let exercise: ActiveListeningExercise
     var compact = false
+    var completedPhrase: ShadowingPhrase? = nil
     let onReplay: () -> Void
     let onResult: (String, Bool) -> Void
 
-    @State private var selectedChoices: [Int: String] = [:]
+    @State private var progress = ListeningExerciseProgress()
     @State private var translationRequest: VocabularyTranslationRequest?
+    @State private var isAnswerAnimating = false
+    @State private var feedbackRevision = 0
+    @State private var successRevision = 0
+    @State private var failureRevision = 0
+    @State private var lastRejectedChoice: String?
+    @State private var completedTranslations: [UUID: String] = [:]
+    @Namespace private var wordAnimation
 
     private var nextBlankIndex: Int? {
-        exercise.blanks.indices.first { selectedChoices[$0] == nil }
+        exercise.blanks.indices.first { progress.solvedAnswers[exercise.blanks[$0].tokenIndex] == nil }
     }
 
     var body: some View {
@@ -345,16 +354,40 @@ struct ActiveListeningExerciseView: View {
             }
         }
         .onChange(of: exercise.id) { _, _ in reset() }
+        .sensoryFeedback(.success, trigger: successRevision)
+        .sensoryFeedback(.error, trigger: failureRevision)
+        .task(id: feedbackRevision) {
+            guard isAnswerAnimating else { return }
+            do {
+                try await Task.sleep(for: .milliseconds(reduceMotion ? 120 : 350))
+            } catch { return }
+            guard !Task.isCancelled else { return }
+            isAnswerAnimating = false
+        }
     }
 
     private var exerciseContent: some View {
         VStack(spacing: compact ? 7 : 12) {
             PracticeTextArea {
-                Text(exercise.maskedText)
+                VStack(spacing: 8) {
+                WordFlowLayout(spacing: 3) {
+                    ForEach(exercise.tokens.indices, id: \.self) { index in
+                        sentenceToken(at: index)
+                    }
+                }
                 .font((compact ? Font.subheadline : Font.title3).weight(.semibold))
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, alignment: .center)
+                if nextBlankIndex == nil, !exercise.blanks.isEmpty,
+                   let completedPhrase,
+                   appModel.profile.learningLanguage != appModel.profile.nativeLanguage {
+                    PhraseTranslationView(
+                        phrase: completedPhrase,
+                        sourceLanguage: appModel.profile.learningLanguage,
+                        targetLanguage: appModel.profile.nativeLanguage,
+                        translations: $completedTranslations
+                    )
+                }
+                }
             }
             .id(exercise.id)
             .frame(maxHeight: .infinity)
@@ -364,40 +397,72 @@ struct ActiveListeningExerciseView: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                 multipleChoiceGrid(for: nextBlankIndex)
+                HStack {
+                    Text(lastRejectedChoice == nil ? "Escolha a palavra que você ouviu." : "Tente novamente.")
+                    Spacer(minLength: 4)
+                    Button(action: onReplay) { Label("Ouvir", systemImage: "speaker.wave.2.fill") }
+                        .buttonStyle(.plain)
+                }
+                .font(.caption2)
+                .foregroundStyle(lastRejectedChoice == nil ? .secondary : ShadowingTheme.coral)
             } else {
-                let correct = exercise.blanks.indices.filter {
-                    exercise.blanks[$0].accepts(selectedChoices[$0] ?? "")
-                }.count
-                Text("\(correct)/\(exercise.blanks.count) palavras corretas")
+                Text("\(progress.solvedAnswers.count)/\(exercise.blanks.count) palavras preenchidas")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(correct == exercise.blanks.count ? ShadowingTheme.mint : ShadowingTheme.coral)
-                PracticeTextArea {
-                    VStack(alignment: .leading, spacing: 7) {
-                        ForEach(exercise.blanks) { blank in
-                            let index = exercise.blanks.firstIndex(of: blank) ?? 0
-                            if blank.accepts(selectedChoices[index] ?? "") {
-                                Label("Palavra \(index + 1): \(blank.answer) ✓", systemImage: "checkmark.circle.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(ShadowingTheme.mint)
-                            } else {
+                    .foregroundStyle(ShadowingTheme.mint)
+                Text("\(progress.attempts) \(progress.attempts == 1 ? "tentativa" : "tentativas")")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if !progress.rejectedChoices.isEmpty {
+                    PracticeTextArea {
+                        VStack(alignment: .leading, spacing: 7) {
+                            ForEach(exercise.blanks.filter { progress.rejectedChoices[$0.tokenIndex] != nil }) { blank in
                                 feedback(for: blank)
                             }
                         }
                     }
+                    .frame(height: compact ? 60 : 90)
                 }
-                .frame(height: compact ? 92 : 130)
             }
         }
-        .animation(.smooth(duration: 0.22), value: selectedChoices.count)
+    }
+
+    @ViewBuilder
+    private func sentenceToken(at index: Int) -> some View {
+        if let blank = exercise.blanks.first(where: { $0.tokenIndex == index }) {
+            let solved = progress.solvedAnswers[index] != nil
+            Text(exercise.tokens[index])
+                .hidden()
+                .overlay {
+                    if solved {
+                        if reduceMotion {
+                            Text(exercise.tokens[index]).foregroundStyle(ShadowingTheme.mint)
+                        } else {
+                            Text(exercise.tokens[index])
+                                .foregroundStyle(ShadowingTheme.mint)
+                                .matchedGeometryEffect(id: blank.tokenIndex, in: wordAnimation, properties: .position)
+                        }
+                    } else {
+                        Text(exercise.maskedTokens[index])
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
+                    }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(solved ? exercise.tokens[index] : "Palavra a preencher")
+        } else {
+            Text(exercise.tokens[index])
+        }
     }
 
     private func multipleChoiceGrid(for index: Int) -> some View {
-        LazyVGrid(columns: columns, spacing: 6) {
-            ForEach(exercise.blanks[index].choices, id: \.self) { choice in
+        let blank = exercise.blanks[index]
+        return LazyVGrid(columns: columns, spacing: 6) {
+            ForEach(blank.choices, id: \.self) { choice in
+                let rejected = progress.rejectedChoices[blank.tokenIndex]?.contains(choice) == true
                 Button {
                     submit(choice, for: index)
                 } label: {
-                    Text(choice)
+                    choiceLabel(choice, blank: blank)
                         .font((compact ? Font.caption : Font.subheadline).weight(.semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
@@ -405,11 +470,24 @@ struct ActiveListeningExerciseView: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, compact ? 7 : 10)
                         .frame(minHeight: 44)
-                        .foregroundStyle(.white)
-                        .background(.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                        .foregroundStyle(rejected ? ShadowingTheme.coral : .white)
+                        .background(rejected ? ShadowingTheme.coral.opacity(0.12) : .white.opacity(0.065), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .disabled(isAnswerAnimating || rejected)
+                .phaseAnimator([0.0, -6, 6, -4, 4, 0], trigger: failureRevision) { content, offset in
+                    content.offset(x: !reduceMotion && lastRejectedChoice == choice ? offset : 0)
+                } animation: { _ in .linear(duration: 0.045) }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func choiceLabel(_ choice: String, blank: ListeningBlank) -> some View {
+        if blank.accepts(choice) && !reduceMotion {
+            Text(choice).matchedGeometryEffect(id: blank.tokenIndex, in: wordAnimation, properties: .position)
+        } else {
+            Text(choice)
         }
     }
 
@@ -457,15 +535,31 @@ struct ActiveListeningExerciseView: View {
     }
 
     private func submit(_ response: String, for index: Int) {
-        guard selectedChoices[index] == nil else { return }
-        selectedChoices[index] = response
+        guard !isAnswerAnimating, exercise.blanks.indices.contains(index) else { return }
         let blank = exercise.blanks[index]
-        onResult(blank.answer, blank.accepts(response))
+        var updated = progress
+        guard let correct = updated.submit(response, for: blank) else { return }
+        isAnswerAnimating = true
+        lastRejectedChoice = correct ? nil : response
+        feedbackRevision += 1
+        if correct {
+            withAnimation(reduceMotion ? nil : .smooth(duration: 0.32)) { progress = updated }
+            successRevision += 1
+        } else {
+            progress = updated
+            failureRevision += 1
+        }
+        onResult(blank.answer, correct)
+        UIAccessibility.post(notification: .announcement, argument: correct ? "Correto: \(blank.answer)" : "Resposta incorreta. Tente novamente.")
     }
 
     private func reset() {
-        selectedChoices = [:]
+        progress = ListeningExerciseProgress()
+        isAnswerAnimating = false
+        lastRejectedChoice = nil
+        feedbackRevision += 1
         translationRequest = nil
+        completedTranslations = [:]
     }
 
     private func saveDifficultWord(_ word: String) {
@@ -536,12 +630,6 @@ struct HiddenCaptionDictationView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("Concluído") { isFocused = false }
-            }
-        }
         .onChange(of: response) { _, _ in score = nil }
         .onChange(of: isFocused) { _, focused in onFocusChange(focused) }
         .onDisappear { onFocusChange(false) }

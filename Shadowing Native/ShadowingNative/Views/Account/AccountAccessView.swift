@@ -1,4 +1,5 @@
 import AuthenticationServices
+import GoogleSignIn
 import SwiftUI
 
 struct AccountAccessView: View {
@@ -12,6 +13,11 @@ struct AccountAccessView: View {
     @State private var isBusy = false
     @State private var message: String?
     @State private var hasAcceptedTerms = false
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable {
+        case name, email, password
+    }
 
     var body: some View {
         NavigationStack {
@@ -22,9 +28,9 @@ struct AccountAccessView: View {
                         Image(systemName: "person.crop.circle.badge.checkmark")
                             .font(.system(size: 48))
                             .foregroundStyle(ShadowingTheme.blue)
-                        Text(isCreatingAccount ? "Crie sua conta" : "Bem-vindo de volta")
+                        Text("Seu inglês começa aqui")
                             .font(.largeTitle.bold())
-                        Text("Salve seu progresso e receba vídeos no seu nível. Se já tem conta, escolha Entrar.")
+                        Text("Entre ou crie sua conta para salvar seus estudos e receber vídeos no seu nível.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
 
@@ -33,11 +39,12 @@ struct AccountAccessView: View {
                             Text("Criar conta").tag(true)
                         }
                         .pickerStyle(.segmented)
-                        .padding(.top, 8)
+                        .disabled(isBusy)
 
                         if isCreatingAccount {
                             TextField("Seu nome", text: $name)
                                 .textContentType(.name)
+                                .focused($focusedField, equals: .name)
                                 .accountField()
                         }
                         TextField("E-mail", text: $email)
@@ -45,21 +52,25 @@ struct AccountAccessView: View {
                             .keyboardType(.emailAddress)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                            .focused($focusedField, equals: .email)
                             .accountField()
                         SecureField("Senha", text: $password)
                             .textContentType(isCreatingAccount ? .newPassword : .password)
+                            .focused($focusedField, equals: .password)
                             .accountField()
-
-                        if let message {
-                            Text(message)
-                                .font(.footnote)
-                                .foregroundStyle(ShadowingTheme.coral)
-                        }
 
                         LegalLinksView()
                         Toggle("Aceito os Termos de Uso e estou ciente da Política de Privacidade.", isOn: $hasAcceptedTerms)
                             .font(.footnote)
                             .tint(ShadowingTheme.blue)
+                            .disabled(isBusy)
+
+                        if let message {
+                            Text(message)
+                                .font(.footnote)
+                                .foregroundStyle(ShadowingTheme.coral)
+                                .accessibilityIdentifier("account.message")
+                        }
 
                         Button {
                             run {
@@ -91,30 +102,34 @@ struct AccountAccessView: View {
 
                         HStack {
                             Rectangle().frame(height: 1)
-                            Text("ou").font(.caption)
+                            Text("ou continue com").font(.caption)
+                                .fixedSize()
                             Rectangle().frame(height: 1)
                         }
                         .foregroundStyle(.secondary)
                         .padding(.vertical, 6)
 
-                        Button {
-                            run { try await authSession.signInWithGoogle() }
-                        } label: {
-                            Label("Continuar com Google", systemImage: "g.circle.fill")
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 48)
+                        VStack(spacing: 12) {
+                            NativeAppleSignInButton {
+                                run { try await authSession.signInWithApple() }
+                            }
+                            .frame(height: 50)
+                            .accessibilityIdentifier("account.apple")
+
+                            NativeGoogleSignInButton {
+                                run { try await authSession.signInWithGoogle() }
+                            }
+                            .frame(height: 50)
+                            .accessibilityIdentifier("account.google")
                         }
-                        .buttonStyle(.bordered)
                         .disabled(isBusy || !hasAcceptedTerms)
 
-                        NativeAppleSignInButton {
-                            run { try await authSession.signInWithApple() }
-                        }
-                        .frame(height: 50)
-                        .disabled(isBusy || !hasAcceptedTerms)
                     }
                     .padding(24)
+                    .frame(maxWidth: 560)
+                    .frame(maxWidth: .infinity)
                 }
+                .scrollDismissesKeyboard(.interactively)
             }
             .navigationTitle("Conta")
             .navigationBarTitleDisplayMode(.inline)
@@ -140,6 +155,7 @@ struct AccountAccessView: View {
         dismissOnSuccess: @escaping () -> Bool = { true }
     ) {
         guard !isBusy else { return }
+        focusedField = nil
         isBusy = true
         message = nil
         Task {
@@ -148,7 +164,9 @@ struct AccountAccessView: View {
                 try await operation()
                 if dismissOnSuccess() { dismiss() }
             } catch {
-                message = AuthSession.message(for: error)
+                if !AuthSession.isCancellation(error) {
+                    message = AuthSession.message(for: error)
+                }
             }
         }
     }
@@ -257,6 +275,33 @@ struct AccountDeletionView: View {
             )
             errorMessage = AuthSession.message(for: error)
         }
+    }
+}
+
+private struct NativeGoogleSignInButton: UIViewRepresentable {
+    let action: () -> Void
+
+    func makeUIView(context: Context) -> GIDSignInButton {
+        let button = GIDSignInButton()
+        button.style = .wide
+        button.colorScheme = .light
+        button.addTarget(context.coordinator, action: #selector(Coordinator.tapped), for: .touchUpInside)
+        return button
+    }
+
+    func updateUIView(_ view: GIDSignInButton, context: Context) {
+        context.coordinator.action = action
+        view.isEnabled = context.environment.isEnabled
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    final class Coordinator: NSObject {
+        var action: () -> Void
+
+        init(action: @escaping () -> Void) { self.action = action }
+
+        @objc func tapped() { action() }
     }
 }
 

@@ -301,7 +301,30 @@ struct RecommendationAudit {
             preconditionFailure("API authorization failure was silently retried")
         } catch {
             precondition(DeniedURLProtocol.requests.count == 1)
+            precondition((error as? YouTubeSearchAPIError)?.reason == .quotaExceeded)
         }
+        for operation in ["channels", "channel-shorts", "short-search"] {
+            do {
+                switch operation {
+                case "channels":
+                    _ = try await deniedService.searchChannels(query: "SubwayTakes")
+                case "channel-shorts":
+                    _ = try await deniedService.searchChannelShorts(
+                        channel: ShortsChannelResult(id: "fixture-channel", title: "SubwayTakes"),
+                        query: "SubwayTakes",
+                        level: .beginner
+                    )
+                default:
+                    _ = try await deniedService.searchShorts(query: "SubwayTakes", level: .beginner)
+                }
+                preconditionFailure("API quota failure was lost: \(operation)")
+            } catch {
+                let failure = error as? YouTubeSearchAPIError
+                precondition(failure?.reason == .quotaExceeded && failure?.statusCode == 403)
+                precondition(failure?.localizedDescription.contains("cota diária") == true)
+            }
+        }
+        try auditYouTubeAPIErrors()
         let missingKey = ShortsDiscoveryService(apiKey: nil, session: session, defaults: UserDefaults(suiteName: "shadowing.recommendation-audit.missing-key")!)
         do {
             _ = try await missingKey.discoverBatch(for: profile, feedback: [:])
@@ -329,6 +352,40 @@ struct RecommendationAudit {
         YouTubeTranscript(videoID: id, title: "Fixture", channel: "Fixture", languageCode: "en", source: "fixture", segments: (0..<10).map { index in
             YouTubeTranscriptSegment(text: "You can take your time now.", start: Double(index) * 4, end: Double(index + 1) * 4)
         })
+    }
+
+    private static func auditYouTubeAPIErrors() throws {
+        let cases: [(Int, String?, String?, YouTubeSearchAPIError.Reason)] = [
+            (403, "quotaExceeded", nil, .quotaExceeded),
+            (403, "dailyLimitExceeded", nil, .quotaExceeded),
+            (403, "userRateLimitExceeded", nil, .rateLimited),
+            (400, "keyInvalid", nil, .invalidKey),
+            (400, "badRequest", "API_KEY_INVALID", .invalidKey),
+            (403, "forbidden", "API_KEY_IOS_APP_BLOCKED", .restrictedKey),
+            (403, nil, "API_KEY_SERVICE_BLOCKED", .restrictedKey),
+            (403, "accessNotConfigured", nil, .apiDisabled),
+            (403, "forbidden", "SERVICE_DISABLED", .apiDisabled),
+            (400, "invalidFilters", nil, .invalidRequest),
+            (404, "channelNotFound", nil, .channelUnavailable),
+            (401, nil, nil, .unauthorized),
+            (403, "unrecognizedReason", nil, .unknown),
+            (429, nil, nil, .rateLimited),
+            (503, nil, nil, .serviceUnavailable)
+        ]
+        for (status, legacy, detail, expected) in cases {
+            var body: [String: Any] = ["message": "Private fixture: API_KEY_MUST_NOT_APPEAR"]
+            if let legacy { body["errors"] = [["reason": legacy]] }
+            if let detail { body["details"] = [["reason": detail]] }
+            let data = try JSONSerialization.data(withJSONObject: ["error": body])
+            let failure = YouTubeSearchAPIError(statusCode: status, data: data)
+            precondition(failure.reason == expected, "Wrong API failure classification: \(legacy ?? detail ?? String(status))")
+            precondition(!failure.localizedDescription.contains("API_KEY_MUST_NOT_APPEAR"))
+        }
+        let empty = YouTubeSearchAPIError(statusCode: 403, data: Data())
+        let malformed = YouTubeSearchAPIError(statusCode: 503, data: Data("not JSON".utf8))
+        precondition(empty.reason == .unknown && empty.blocksFurtherSearches)
+        precondition(malformed.reason == .serviceUnavailable && !malformed.blocksFurtherSearches)
+        print("PASS YouTube API: quota, throttling, key restrictions, disabled API, invalid request and channel errors stay distinct; private API messages are not exposed")
     }
 }
 
@@ -366,6 +423,7 @@ final class DeniedURLProtocol: URLProtocol, @unchecked Sendable {
     override func startLoading() {
         Self.requests.increment()
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 403, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(#"{"error":{"errors":[{"reason":"quotaExceeded"}]}}"#.utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
 

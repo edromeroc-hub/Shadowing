@@ -8,6 +8,7 @@ struct LearningProfile: Codable, Equatable, Sendable {
     var goals: Set<LearningGoal>
     var interests: Set<LearningInterest>
     var dailyCommitment: DailyCommitment
+    var repeatPauseExtraPercent: Int
 
     init(
         name: String,
@@ -16,7 +17,8 @@ struct LearningProfile: Codable, Equatable, Sendable {
         level: EnglishLevel,
         goals: Set<LearningGoal>,
         interests: Set<LearningInterest>,
-        dailyCommitment: DailyCommitment
+        dailyCommitment: DailyCommitment,
+        repeatPauseExtraPercent: Int = 30
     ) {
         self.name = name
         self.nativeLanguage = nativeLanguage
@@ -25,6 +27,7 @@ struct LearningProfile: Codable, Equatable, Sendable {
         self.goals = goals
         self.interests = interests
         self.dailyCommitment = dailyCommitment
+        self.repeatPauseExtraPercent = Self.validPausePercent(repeatPauseExtraPercent)
     }
 
     static let starter = LearningProfile(
@@ -45,6 +48,7 @@ struct LearningProfile: Codable, Equatable, Sendable {
         case goals
         case interests
         case dailyCommitment
+        case repeatPauseExtraPercent
     }
 
     init(from decoder: Decoder) throws {
@@ -56,6 +60,15 @@ struct LearningProfile: Codable, Equatable, Sendable {
         goals = try container.decodeIfPresent(Set<LearningGoal>.self, forKey: .goals) ?? [.listening, .conversation]
         interests = try container.decodeIfPresent(Set<LearningInterest>.self, forKey: .interests) ?? [.travel, .technology]
         dailyCommitment = try container.decodeIfPresent(DailyCommitment.self, forKey: .dailyCommitment) ?? .tenMinutes
+        repeatPauseExtraPercent = Self.validPausePercent((try? container.decode(Int.self, forKey: .repeatPauseExtraPercent)) ?? 30)
+    }
+
+    private static func validPausePercent(_ value: Int) -> Int {
+        (0...100).contains(value) && value.isMultiple(of: 10) ? value : 30
+    }
+
+    func hasSameRecommendationPreferences(as other: Self) -> Bool {
+        level == other.level && interests == other.interests && goals == other.goals
     }
 }
 

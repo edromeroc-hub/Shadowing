@@ -5,11 +5,12 @@ import FirebaseCore
 import Foundation
 import GoogleSignIn
 import Observation
+import OSLog
 import Security
 import UIKit
 
 struct AccountUser: Equatable {
-    enum Provider: Equatable {
+    enum Provider: String, Equatable {
         case apple
         case google
         case password
@@ -24,6 +25,7 @@ struct AccountUser: Equatable {
 @MainActor
 @Observable
 final class AuthSession {
+    private static let logger = Logger(subsystem: "com.edromero.shadowing.next", category: "Authentication")
     private(set) var user: AccountUser?
     private(set) var hasResolvedInitialSession = false
     var showsAccountDeletionConfirmation = false
@@ -63,20 +65,20 @@ final class AuthSession {
     }
 
     func signInWithGoogle() async throws {
-        let credential = try await googleCredential()
-        let result = try await Auth.auth().signIn(with: credential)
-        user = Self.accountUser(from: result.user)
+        try await signIn(using: .google) {
+            try await self.googleCredential()
+        }
     }
 
     func signInWithApple() async throws {
-        let authorization = try await AppleAuthorizationCoordinator.shared.authorize()
-        let credential = OAuthProvider.appleCredential(
-            withIDToken: authorization.identityToken,
-            rawNonce: authorization.rawNonce,
-            fullName: authorization.fullName
-        )
-        let result = try await Auth.auth().signIn(with: credential)
-        user = Self.accountUser(from: result.user)
+        try await signIn(using: .apple) {
+            let authorization = try await AppleAuthorizationCoordinator.shared.authorize()
+            return OAuthProvider.appleCredential(
+                withIDToken: authorization.identityToken,
+                rawNonce: authorization.rawNonce,
+                fullName: authorization.fullName
+            )
+        }
     }
 
     func sendPasswordReset(email: String) async throws {
@@ -143,24 +145,57 @@ final class AuthSession {
         return deletedUserID
     }
 
+    static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let failure = error as NSError
+        return (failure.domain == ASAuthorizationError.errorDomain && failure.code == ASAuthorizationError.canceled.rawValue)
+            || (failure.domain == kGIDSignInErrorDomain && failure.code == -5)
+            || (failure.domain == AuthErrorDomain && failure.code == AuthErrorCode.webContextCancelled.rawValue)
+    }
+
     static func message(for error: Error) -> String {
+        if isCancellation(error) { return "Autorização cancelada." }
         if let accountError = error as? AccountError {
             return accountError.localizedDescription
         }
-        let errorCode = (error as NSError).code
-        switch errorCode {
-        case 17007: return "Este e-mail já está cadastrado."
-        case 17008: return "Digite um e-mail válido."
-        case 17009, 17011, 17004: return "E-mail ou senha incorretos."
-        case 17014: return "Entre novamente na conta antes de tentar excluir."
-        case 17020: return "Sem conexão. Verifique a internet e tente novamente."
-        case 17026: return "Use uma senha com pelo menos 6 caracteres."
-        default:
-            if (error as NSError).domain == ASAuthorizationError.errorDomain,
-               errorCode == ASAuthorizationError.canceled.rawValue {
-                return "Autorização cancelada."
+        let failure = error as NSError
+        if failure.domain == ASAuthorizationError.errorDomain {
+            return "Não foi possível autorizar com a Apple. Confira sua conta Apple nos Ajustes e tente novamente."
+        }
+        if failure.domain == kGIDSignInErrorDomain {
+            return "Não foi possível entrar com o Google. Tente novamente."
+        }
+        guard failure.domain == AuthErrorDomain else { return error.localizedDescription }
+        switch AuthErrorCode(rawValue: failure.code) {
+        case .emailAlreadyInUse: return "Este e-mail já está cadastrado."
+        case .invalidEmail: return "Digite um e-mail válido."
+        case .wrongPassword, .userNotFound, .invalidCredential: return "Não foi possível validar seu acesso. Confira seus dados e tente novamente."
+        case .accountExistsWithDifferentCredential: return "Este e-mail já usa outra forma de acesso. Entre com o método usado para criar sua conta."
+        case .requiresRecentLogin: return "Entre novamente na conta antes de tentar excluir."
+        case .networkError: return "Sem conexão. Verifique a internet e tente novamente."
+        case .weakPassword: return "Use uma senha com pelo menos 6 caracteres."
+        case .tooManyRequests: return "Muitas tentativas. Aguarde um pouco antes de tentar novamente."
+        case .operationNotAllowed: return "Esta forma de acesso ainda não está habilitada. Use outra opção para entrar."
+        case .appNotAuthorized, .invalidAPIKey: return "Não foi possível autorizar esta versão do app. Entre em contato pelo Suporte."
+        case .keychainError: return "Não foi possível salvar seu acesso com segurança neste aparelho. Feche e abra o app para tentar novamente."
+        default: return "Não foi possível concluir o acesso. Tente novamente."
+        }
+    }
+
+    private func signIn(
+        using provider: AccountUser.Provider,
+        credential: () async throws -> AuthCredential
+    ) async throws {
+        do {
+            let credential = try await credential()
+            let result = try await Auth.auth().signIn(with: credential)
+            user = Self.accountUser(from: result.user)
+        } catch {
+            if !Self.isCancellation(error) {
+                let failure = error as NSError
+                Self.logger.error("Sign-in failed: provider=\(provider.rawValue, privacy: .public) domain=\(failure.domain, privacy: .public) code=\(failure.code)")
             }
-            return error.localizedDescription
+            throw error
         }
     }
 
@@ -181,7 +216,14 @@ final class AuthSession {
     }
 
     private func googleCredential() async throws -> AuthCredential {
-        guard let clientID = FirebaseApp.app()?.options.clientID else {
+        guard let options = FirebaseApp.app()?.options,
+              let clientID = options.clientID, !clientID.isEmpty,
+              options.bundleID == Bundle.main.bundleIdentifier else {
+            throw AccountError.missingGoogleConfiguration
+        }
+        let expectedScheme = clientID.split(separator: ".").reversed().joined(separator: ".")
+        let urlTypes = Bundle.main.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]] ?? []
+        guard urlTypes.contains(where: { ($0["CFBundleURLSchemes"] as? [String])?.contains(expectedScheme) == true }) else {
             throw AccountError.missingGoogleConfiguration
         }
         guard let presenter = UIApplication.shared.accountTopViewController else {
@@ -250,11 +292,16 @@ private final class AppleAuthorizationCoordinator: NSObject, ASAuthorizationCont
     private var continuation: CheckedContinuation<AppleAuthorization, Error>?
     private var nonce: String?
     private var controller: ASAuthorizationController?
+    private var anchor: ASPresentationAnchor?
 
     func authorize() async throws -> AppleAuthorization {
         guard continuation == nil else { throw AccountError.authorizationInProgress }
+        guard let window = UIApplication.shared.accountTopViewController?.view.window else {
+            throw AccountError.missingPresentationContext
+        }
         let rawNonce = try Self.randomNonce()
         nonce = rawNonce
+        anchor = window
         let request = ASAuthorizationAppleIDProvider().createRequest()
         request.requestedScopes = [.fullName, .email]
         request.nonce = SHA256.hash(data: Data(rawNonce.utf8))
@@ -271,10 +318,7 @@ private final class AppleAuthorizationCoordinator: NSObject, ASAuthorizationCont
     }
 
     func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first(where: { $0.activationState == .foregroundActive })?
-            .windows.first(where: \.isKeyWindow) ?? ASPresentationAnchor()
+        anchor ?? ASPresentationAnchor()
     }
 
     func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
@@ -303,6 +347,7 @@ private final class AppleAuthorizationCoordinator: NSObject, ASAuthorizationCont
         continuation = nil
         nonce = nil
         controller = nil
+        anchor = nil
     }
 
     private static func randomNonce(length: Int = 32) throws -> String {

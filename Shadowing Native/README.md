@@ -17,6 +17,8 @@ Nova versão 100% SwiftUI do Shadowing AI, isolada em código e projeto Xcode da
 - Cliente iOS registrado com Bundle ID `com.edromero.shadowing.next` e configuração em `ShadowingNative/GoogleService-Info.plist`.
 - Cadastro por e-mail/senha, Google ou Apple abre antes da anamnese; quem já tem conta pode escolher Entrar. A sessão Firebase persiste entre aberturas do app.
 - O acesso Google usa o URL scheme do cliente nativo em `ShadowingNative/Info.plist`.
+- Apple e Google aparecem no início da tela de conta, com os botões oficiais dos SDKs; não exigem preencher nome, e-mail ou senha. O aceite dos termos vale também para essas opções. Cancelar a autorização apenas retorna à tela de conta. O app valida o cliente e o retorno do Google antes de abrir a autorização e registra somente provedor, domínio e código em falhas de login, sem tokens ou dados pessoais.
+- `zsh Audits/run-auth-configuration.zsh` confere o cliente iOS, o retorno Google e a capacidade Apple nos arquivos locais. Habilitar os provedores no Firebase e testar uma autenticação real continuam sendo verificações separadas; o botão aparecer ou a compilação passar não comprovam isso.
 - A exclusão fica em **Perfil → Excluir minha conta**, pede confirmação e nova autenticação. No caso Apple, o token é revogado antes da exclusão da conta Firebase.
 - Após confirmação do servidor, o app remove o documento `nativeStudy/{uid}`, os sinais de Shorts da conta e os dados locais desse perfil. Os dados locais são separados por UID; dados de convidado migram para a primeira conta acessada.
 - Histórico, frase atual, perfil, progresso e vocabulário são salvos localmente e sincronizados em um documento privado do Firestore após o login. Ao entrar em outro aparelho, os registros são mesclados com os dados locais. Sem conexão, o app mantém os dados locais e mostra o erro de sincronização no Perfil para permitir nova tentativa. A sincronização usa o banco Firestore Standard já existente; não requer Blaze.
@@ -41,6 +43,8 @@ Os produtos de assinatura esperados são:
 Esses IDs estão reservados no código para uma versão paga futura. A build beta atual não carrega os produtos nem permite iniciar compras; não promete teste de três dias ou conversão automática em assinatura.
 
 ## YouTube
+
+Em **Perfil → Treino**, o tempo extra para repetir pode ser ajustado de 0% a 100%, com padrão de 30%. A preferência acompanha a conta e considera a velocidade e a duração reproduzida do trecho. Alterar esse ajuste preserva o feed de Shorts. Nas lacunas da Escuta ativa, respostas corretas preenchem a frase; erros permitem tentar outra alternativa e entram na contagem de tentativas. Em Frase inteira, use a confirmação do teclado ou o botão de conferir no campo; não há barra adicional de conclusão.
 
 O catálogo compartilhado de Shorts é servido pelo Firestore com legenda e trechos preparados. O app carrega primeiro os aprovados no nível e interesses do aluno; a descoberta no aparelho só complementa o feed. A curadoria local, revisão e publicação estão documentadas em [Curador de Shorts](curator/README.md). O índice composto pode levar algum tempo para ficar pronto após o deploy. Likes são pessoais imediatamente e entram na pontuação por perfil após o Mac executar a agregação. A política de privacidade local foi atualizada; publique também a página de privacidade usada pelo TestFlight antes de distribuir uma build com esta coleta.
 

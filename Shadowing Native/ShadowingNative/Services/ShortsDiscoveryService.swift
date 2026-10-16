@@ -1,7 +1,9 @@
 import Foundation
+import OSLog
 
 actor ShortsDiscoveryService {
     static let shared = ShortsDiscoveryService()
+    private static let logger = Logger(subsystem: "com.edromero.shadowing.next", category: "YouTubeSearch")
 
     private let session: URLSession
     private let apiKey: String?
@@ -132,7 +134,7 @@ actor ShortsDiscoveryService {
                     )
                 } catch {
                     try Task.checkCancellation()
-                    if case DiscoveryError.searchUnavailable = error { throw error }
+                    if let failure = error as? YouTubeSearchAPIError, failure.blocksFurtherSearches { throw failure }
                     lastSearchError = error
                     failedChannels.insert(channel.id)
                     continue
@@ -425,7 +427,7 @@ actor ShortsDiscoveryService {
             request.setValue(bundleID, forHTTPHeaderField: "X-Ios-Bundle-Identifier")
         }
         let (data, response) = try await session.data(for: request)
-        try validateSearchResponse(response)
+        try validateSearchResponse(response, data: data)
         return try JSONDecoder().decode(SearchResponse.self, from: data)
     }
 
@@ -474,7 +476,7 @@ actor ShortsDiscoveryService {
             request.setValue(bundleID, forHTTPHeaderField: "X-Ios-Bundle-Identifier")
         }
         let (data, response) = try await session.data(for: request)
-        try validateSearchResponse(response)
+        try validateSearchResponse(response, data: data)
         return try JSONDecoder().decode(SearchResponse.self, from: data)
     }
 
@@ -698,14 +700,16 @@ actor ShortsDiscoveryService {
             request.setValue(bundleID, forHTTPHeaderField: "X-Ios-Bundle-Identifier")
         }
         let (data, response) = try await session.data(for: request)
-        try validateSearchResponse(response)
+        try validateSearchResponse(response, data: data)
         return try JSONDecoder().decode(SearchResponse.self, from: data)
     }
 
-    private func validateSearchResponse(_ response: URLResponse) throws {
+    private func validateSearchResponse(_ response: URLResponse, data: Data) throws {
         guard let status = (response as? HTTPURLResponse)?.statusCode else { throw DiscoveryError.searchFailed }
-        if [400, 401, 403, 429].contains(status) { throw DiscoveryError.searchUnavailable }
-        guard status == 200 else { throw DiscoveryError.searchFailed }
+        guard status != 200 else { return }
+        let failure = YouTubeSearchAPIError(statusCode: status, data: data)
+        Self.logger.error("YouTube search failed: status=\(status) reason=\(failure.reason.rawValue, privacy: .public)")
+        throw failure
     }
 
 }
@@ -852,17 +856,95 @@ private struct SearchSnippet: Decodable, Sendable {
     }
 }
 
+struct YouTubeSearchAPIError: LocalizedError, Sendable {
+    enum Reason: String, Sendable {
+        case quotaExceeded
+        case rateLimited
+        case invalidKey
+        case restrictedKey
+        case apiDisabled
+        case unauthorized
+        case invalidRequest
+        case channelUnavailable
+        case serviceUnavailable
+        case unknown
+    }
+
+    let statusCode: Int
+    let reason: Reason
+
+    var blocksFurtherSearches: Bool { [400, 401, 403, 429].contains(statusCode) }
+
+    init(statusCode: Int, data: Data) {
+        self.statusCode = statusCode
+        let response = try? JSONDecoder().decode(APIErrorResponse.self, from: data)
+        let reasons = (response?.error.errors ?? []) + (response?.error.details ?? [])
+        let recognized = reasons.compactMap { Self.reason(for: $0.reason ?? "") }
+        if let reason = recognized.first(where: { $0 != .unauthorized && $0 != .invalidRequest }) ?? recognized.first {
+            self.reason = reason
+        } else {
+            self.reason = switch statusCode {
+            case 400: .invalidRequest
+            case 401: .unauthorized
+            case 429: .rateLimited
+            case 500...599: .serviceUnavailable
+            default: .unknown
+            }
+        }
+    }
+
+    var errorDescription: String? {
+        switch reason {
+        case .quotaExceeded: "A cota diária de buscas do YouTube foi atingida. Tente novamente mais tarde."
+        case .rateLimited: "O YouTube limitou temporariamente as buscas. Aguarde um pouco e tente novamente."
+        case .invalidKey: "A busca do YouTube está com um problema de configuração. Entre em contato pelo Suporte."
+        case .restrictedKey: "O YouTube não autorizou esta versão do app a fazer buscas. Entre em contato pelo Suporte."
+        case .apiDisabled: "A busca do YouTube está desativada para o app. Entre em contato pelo Suporte."
+        case .unauthorized: "O YouTube não autorizou a busca. Tente novamente ou entre em contato pelo Suporte."
+        case .invalidRequest: "O YouTube não aceitou os parâmetros desta consulta. Tente outra busca ou outro canal."
+        case .channelUnavailable: "Este canal não está disponível para consulta no YouTube."
+        case .serviceUnavailable: "O serviço de buscas do YouTube está temporariamente indisponível. Tente novamente em alguns minutos."
+        case .unknown: "Não foi possível consultar o YouTube agora. Tente novamente ou entre em contato pelo Suporte."
+        }
+    }
+
+    private static func reason(for value: String) -> Reason? {
+        switch value.lowercased().replacingOccurrences(of: "_", with: "") {
+        case "quotaexceeded", "dailylimitexceeded", "dailylimitexceededunreg": .quotaExceeded
+        case "ratelimitexceeded", "userratelimitexceeded", "resourceexhausted": .rateLimited
+        case "keyinvalid", "apikeyinvalid", "keyexpired", "apikeyexpired": .invalidKey
+        case "iprefererblocked", "apikeyiosappblocked", "apikeyandroidappblocked", "apikeyhttpreferrerblocked", "apikeyipaddressblocked", "apikeyserviceblocked": .restrictedKey
+        case "accessnotconfigured", "servicedisabled", "apidisabled": .apiDisabled
+        case "autherror", "forbidden", "insufficientpermissions", "authorizationrequired": .unauthorized
+        case "invalidfilters", "incompatibleparameters", "invalidpagetoken", "missingrequiredparameter", "unexpectedparameter", "invalidvalue", "badrequest", "invalidparameter": .invalidRequest
+        case "channelnotfound", "channelclosed", "channelsuspended": .channelUnavailable
+        default: nil
+        }
+    }
+
+    private struct APIErrorResponse: Decodable {
+        let error: Failure
+
+        struct Failure: Decodable {
+            let errors: [Detail]?
+            let details: [Detail]?
+        }
+
+        struct Detail: Decodable {
+            let reason: String?
+        }
+    }
+}
+
 private enum DiscoveryError: LocalizedError {
     case missingAPIKey
     case searchFailed
-    case searchUnavailable
     case captionsRateLimited
 
     var errorDescription: String? {
         switch self {
         case .missingAPIKey: "A busca de vídeos está indisponível neste momento."
         case .searchFailed: "Não foi possível atualizar os vídeos. Tente novamente em alguns minutos."
-        case .searchUnavailable: "A busca do YouTube está indisponível. Verifique a chave e a cota da API."
         case .captionsRateLimited: "O YouTube limitou temporariamente a verificação de legendas. Tente de novo em alguns minutos."
         }
     }

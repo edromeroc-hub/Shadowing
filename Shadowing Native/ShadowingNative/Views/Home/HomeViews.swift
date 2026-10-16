@@ -987,6 +987,15 @@ struct ProfileView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("Treino") {
+                    Stepper(value: $model.profile.repeatPauseExtraPercent, in: 0...100, step: 10) {
+                        LabeledContent("Tempo extra para repetir", value: "+\(model.profile.repeatPauseExtraPercent)%")
+                    }
+                    Text("Trecho de 2 segundos → pausa de \((2 * (1 + Double(model.profile.repeatPauseExtraPercent) / 100)).formatted(.number.precision(.fractionLength(1)))) segundos. Vale para vídeos e Shorts.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("Conta") {
                     if let account = authSession.user {
                         LabeledContent("Conectado como", value: account.name)

@@ -315,6 +315,10 @@ struct ShortsFeedView: View {
 private struct DiscoveryRequest: Equatable {
     let profile: LearningProfile
     let revision: Int
+
+    static func == (left: Self, right: Self) -> Bool {
+        left.revision == right.revision && left.profile.hasSameRecommendationPreferences(as: right.profile)
+    }
 }
 
 private struct ShortLessonPage: View {
@@ -331,11 +335,6 @@ private struct ShortLessonPage: View {
     /// Só a auditoria de layout troca o vídeo por um retângulo; aulas prontas do catálogo tocam o YouTube.
     let isLayoutPreview: Bool
 
-    /// `item.topic` vem do primeiro tema de um Set (ordem aleatória); mostra um tema em comum com o perfil.
-    private var displayTopic: String {
-        item.interests.intersection(appModel.profile.interests)
-            .sorted { $0.rawValue < $1.rawValue }.first?.title ?? item.topic
-    }
     let onShuffle: () -> Void
     let onSearch: () -> Void
     let onRateDifficulty: (ShortDifficultyRating) -> Void
@@ -359,6 +358,8 @@ private struct ShortLessonPage: View {
     @State private var englishHeight: CGFloat = 68
     @State private var translationHeight: CGFloat = 48
     @State private var dictationHeight: CGFloat = 80
+    @State private var headerHeight: CGFloat = 48
+    @State private var panelChromeHeight: CGFloat = 190
 
     private var selectedPhrase: ShadowingPhrase? {
         phrases.first { $0.id == selectedPhraseID }
@@ -383,23 +384,39 @@ private struct ShortLessonPage: View {
                 : 0
             let isKeyboardPresented = keyboardOverlap > 80
             let usableHeight = max(1, geometry.size.height - keyboardOverlap)
+            let layout = ShortPracticeLayout(
+                height: usableHeight,
+                width: max(1, geometry.size.width - 114),
+                headerHeight: headerHeight,
+                panelChromeHeight: panelChromeHeight,
+                desiredContentHeight: panelContentHeight,
+                editing: isKeyboardPresented
+            )
             ZStack {
                 background
 
                 VStack(spacing: 6) {
                     header
                         .fixedSize(horizontal: false, vertical: true)
-                    GeometryReader { playerGeometry in
-                        let height = isKeyboardPresented ? 1 : max(1, min(playerGeometry.size.height, playerGeometry.size.width * 16 / 9))
-                        player(height: height)
-                            .frame(width: playerGeometry.size.width, height: playerGeometry.size.height, alignment: .bottom)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
+                    Spacer(minLength: 0)
+                    HStack(spacing: 6) {
+                        Color.clear.frame(width: 44)
+                        player(height: layout.videoHeight)
+                        ScrollView(.vertical) {
+                            shortActions
+                        }
+                        .scrollIndicators(.hidden)
+                        .frame(width: 44, height: min(206, layout.videoHeight))
                     }
-                    .frame(height: isKeyboardPresented ? 1 : nil)
-                    .opacity(isKeyboardPresented ? 0 : 1)
-                    .allowsHitTesting(!isKeyboardPresented)
-                    if isKeyboardPresented { Spacer(minLength: 0) }
-                    lessonPanel(contentHeight: min(panelContentHeight, max(110, usableHeight - 245), geometry.size.height * 0.43))
+                    .frame(height: layout.videoHeight)
+                    lessonPanel(contentHeight: layout.contentHeight, compactEditing: isKeyboardPresented)
                         .fixedSize(horizontal: false, vertical: true)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height - layout.contentHeight } action: {
+                            if selectedPhrase != nil, !isLoading, errorMessage == nil, abs(panelChromeHeight - $0) > 1 {
+                                panelChromeHeight = $0
+                            }
+                        }
                 }
                 .padding(.horizontal, 7)
                 .padding(.top, 5)
@@ -431,6 +448,9 @@ private struct ShortLessonPage: View {
         .onChange(of: isActive, initial: true) { _, active in
             playerController.setPlaybackAllowed(active)
             if active { startSelectedPhraseIfPossible() }
+        }
+        .onChange(of: appModel.profile.repeatPauseExtraPercent, initial: true) { _, percent in
+            playerController.repeatPauseExtraPercent = percent
         }
         .onChange(of: playerController.isReady) { _, isReady in
             guard isReady else { return }
@@ -474,24 +494,22 @@ private struct ShortLessonPage: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
                 Text("SHADOWING SHORTS")
                     .font(.caption2.bold())
                     .tracking(1.5)
                     .foregroundStyle(ShadowingTheme.blue)
-                Text("\(item.level.title) • \(displayTopic)")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
 
             Spacer()
 
             Text("\(position)/\(total)")
                 .font(.caption.monospacedDigit().weight(.semibold))
                 .foregroundStyle(.secondary)
+        }
+        .frame(minHeight: 24)
+    }
 
+    private var shortActions: some View {
+        VStack(spacing: 10) {
             Button(action: onSearch) {
                 Image(systemName: "magnifyingglass")
                     .frame(width: 44, height: 44)
@@ -499,6 +517,14 @@ private struct ShortLessonPage: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Buscar Shorts e canais")
+
+            Button(action: onShuffle) {
+                Image(systemName: "forward.end.fill")
+                    .frame(width: 44, height: 44)
+                    .background(.white.opacity(0.07), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Próximo Short")
 
             Button {
                 onReact(.liked)
@@ -578,7 +604,7 @@ private struct ShortLessonPage: View {
     }
 
     @ViewBuilder
-    private func lessonPanel(contentHeight: CGFloat) -> some View {
+    private func lessonPanel(contentHeight: CGFloat, compactEditing: Bool = false) -> some View {
         if isLoading {
             HStack(spacing: 12) {
                 ProgressView()
@@ -613,24 +639,31 @@ private struct ShortLessonPage: View {
         } else if let phrase = selectedPhrase {
             VStack(spacing: 5) {
                 HStack {
+                    if compactEditing {
+                        Text("Escuta ativa · Frase inteira")
+                            .font(.caption.weight(.semibold))
+                    } else {
                     PracticeModeSelector(
                         isActiveListening: exerciseMode.isActiveListening,
                         onSelectShadowing: selectShadowingMode,
                         onSelectActiveListening: selectActiveListeningMode
                     )
+                    }
                     Spacer(minLength: 6)
                     Text("\(phraseIndex + 1)/\(phrases.count)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
 
+                if !compactEditing {
                 Text(panelTitle)
                     .font(.caption2.bold())
                     .tracking(1.3)
                     .foregroundStyle(exerciseMode.isActiveListening ? ShadowingTheme.mint : ShadowingTheme.blue)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                }
 
-                if exerciseMode.isActiveListening {
+                if exerciseMode.isActiveListening && !compactEditing {
                     ActiveListeningOptionsView(
                         mode: $exerciseMode,
                         blankCount: $blankCount,
@@ -647,6 +680,7 @@ private struct ShortLessonPage: View {
                         ActiveListeningExerciseView(
                             exercise: activeListeningExercise,
                             compact: true,
+                            completedPhrase: phrase,
                             onReplay: { playerController.play(phrase: phrase) },
                             onResult: { word, isCorrect in
                                 progressStore.recordListeningAttempt(word: word, isCorrect: isCorrect)
@@ -654,6 +688,7 @@ private struct ShortLessonPage: View {
                         )
                         .id(activeListeningExercise.id)
                     } else if exerciseMode == .typing {
+                        PracticeTextArea(contentAlignment: .bottom) {
                         HiddenCaptionDictationView(reference: phrase.text) { focused in
                             isTypingResponse = focused
                             onTypingChanged(focused)
@@ -661,6 +696,7 @@ private struct ShortLessonPage: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { dictationHeight = $0 }
                             .id(phrase.id)
+                        }
                     } else {
                         PracticeCaptionView(
                             phrase: phrase, font: .body.weight(.semibold),

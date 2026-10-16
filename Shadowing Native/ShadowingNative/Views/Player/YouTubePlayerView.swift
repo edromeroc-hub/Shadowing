@@ -28,7 +28,7 @@ final class YouTubePlayerController {
     private(set) var hasRenderedVideo = false
     var isLoopEnabled = true
     var isWaitingForStudent = false
-    var pauseMultiplier = 1.0
+    var repeatPauseExtraPercent = 30
     private(set) var isPlaybackRequested = false
     private(set) var playbackError: String?
     private(set) var playbackRate = 1.0
@@ -217,7 +217,12 @@ final class YouTubePlayerController {
         }
 
         isWaitingForStudent = true
-        let pauseDuration = max(0.8, (phrase.duration - Double(endAdvanceMilliseconds) / 1000) / playbackRate * pauseMultiplier)
+        let pauseDuration = RepeatPauseTiming.duration(
+            start: phrase.start,
+            end: playbackEnd(of: phrase) - Double(endAdvanceMilliseconds) / 1000,
+            playbackRate: playbackRate,
+            extraPercent: repeatPauseExtraPercent
+        )
         let expectedRevision = revision
         loopTask?.cancel()
         loopTask = Task { @MainActor [weak self] in
