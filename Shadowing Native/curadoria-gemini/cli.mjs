@@ -92,7 +92,8 @@ const commands = {
       channelID = found[0].channelID;
       console.log(`Canal: ${found[0].title} (${channelID}${found[0].country ? `, país ${found[0].country}` : ''})\n`);
     }
-    await showCandidates((await channelShorts(key, channelID)).slice(0, 100));
+    const max = flags.has('--todos') ? 300 : 150;
+    await showCandidates((await channelShorts(key, channelID, { max })).slice(0, max));
   },
 
   async info() {

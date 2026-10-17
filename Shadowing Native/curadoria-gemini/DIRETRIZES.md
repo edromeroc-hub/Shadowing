@@ -98,3 +98,12 @@ O máximo é verificado pela ferramenta, que dá erro se passar. Mire no ideal.
 ## 7. Publicação
 
 Publicar coloca o Short no app de todos os alunos. Rode `node cli.mjs publicar ID … --confirmado` quando o usuário aprovar aqueles IDs **ou** quando o pedido dele autorizar publicação automática. No modo automático, publique só o que `montar` aprovar sem `ERRO` e sem aviso de tempo interpolado/estimado, em vídeo com tempo `word` ou `aligned`. O resto vai para a lista de dúvidas. Para trocar um que já está no catálogo: `--atualizar`. Para tirar: `node cli.mjs despublicar ID "motivo" --confirmado`, também só com o OK do usuário.
+
+## Banco de músicas (`approvedMusic`)
+
+Separado dos Shorts de fala: alimenta a aba **Músicas** do app.
+
+- Curadoria por canal de artista: `node musica_cli.mjs artista @Handle estilo1,estilo2`. Ao terminar, o comando republica o índice sozinho.
+- Estilos aceitos (os mesmos do app): `pop`, `rock`, `metal`, `country`, `rnb`, `hiphop`, `indie`, `acoustic`, `classics`, `gospel`, `jazz`, `electronic`, `reggae`. Estilo sem músicas aparece no app como "em breve"; publicar no estilo libera ele.
+- **Índice** `approvedMusic/_index`: resumo de todas as músicas (artista, música, estilos, formato). O app lê só esse documento para montar a busca, os estilos e as bandas, e baixa a letra só da música aberta. Depois de publicar ou despublicar música por outro caminho, rode `node musica_cli.mjs indice`.
+- O nome da banda no app vem do canal do artista; o título é limpo de "Artista - … (Official Video)".

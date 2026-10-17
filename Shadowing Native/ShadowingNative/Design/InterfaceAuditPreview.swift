@@ -28,9 +28,11 @@ struct InterfaceAuditPreview: View {
         case "today": .today
         case "explore": .explore
         case "progress": .progress
-        case "profile": .profile
+        case "profile": .today
+        case "music": .music
         default: .shorts
         }
+        appModel.isProfilePresented = screen == "profile"
         _model = State(initialValue: appModel)
         _progress = State(initialValue: StudyProgressStore(defaults: defaults))
         _vocabulary = State(initialValue: VocabularyStore(defaults: defaults))

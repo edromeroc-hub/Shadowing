@@ -644,21 +644,32 @@ actor ShortsDiscoveryService {
     // Frases antes de palavras soltas, para "entrevista de rua" não virar só "interview".
     private nonisolated static let portugueseSearchTerms: [(String, String)] = [
         ("entrevistas de rua", "street interviews"), ("entrevista de rua", "street interview"),
+        ("entrevista de emprego", "job interview"), ("entrevistas de emprego", "job interviews"),
+        ("morar fora", "living abroad"), ("estudar fora", "study abroad"), ("intercambio", "study abroad"),
         ("videogames", "video games"),
         ("vida real", "daily life"), ("dia a dia", "daily life"), ("rotina", "daily routine"),
         ("viagens", "travel"), ("viagem", "travel"), ("viajar", "travel"), ("turismo", "travel"),
         ("aeroporto", "airport"), ("ferias", "vacation"),
+        ("compras", "shopping"), ("comprar", "shopping"), ("supermercado", "grocery store"), ("loja", "store"),
         ("culinaria", "cooking"), ("cozinhar", "cooking"), ("cozinha", "cooking"), ("receitas", "recipes"),
         ("receita", "recipe"), ("comida", "food"), ("restaurante", "restaurant"),
         ("tecnologia", "technology"), ("celular", "phone"), ("computador", "computer"),
         ("inteligencia artificial", "artificial intelligence"),
         ("negocios", "business"), ("empreendedorismo", "entrepreneur"), ("trabalho", "work"),
-        ("carreira", "career"), ("dinheiro", "money"), ("financas", "finance"), ("empresa", "company"),
+        ("carreira", "career"), ("curriculo", "resume"), ("reuniao", "business meeting"),
+        ("dinheiro", "money"), ("financas", "finance"), ("investimentos", "investing"), ("investir", "investing"),
+        ("acoes", "stock market"), ("bolsa de valores", "stock market"), ("empresa", "company"),
         ("filmes", "movies"), ("filme", "movie"), ("series", "tv series"), ("serie", "tv series"),
         ("cinema", "movies"), ("ator", "actor"), ("atriz", "actress"),
+        ("musica", "music"), ("musicas", "music"), ("cantor", "singer"), ("cantora", "singer"), ("banda", "band"),
         ("noticias", "news"), ("politica", "politics"), ("economia", "economy"),
+        ("historia", "history"), ("geografia", "geography"),
+        ("saude", "health"), ("medicina", "medicine"), ("medico", "doctor"), ("hospital", "hospital"), ("farmacia", "pharmacy"),
         ("ciencia", "science"), ("espaco", "space"), ("fisica", "physics"), ("biologia", "biology"),
+        ("engenharia", "engineering"), ("construcao", "construction"), ("arquitetura", "architecture"), ("obras", "construction"),
+        ("carros", "cars"), ("carro", "car"), ("motores", "engines"), ("mecanica", "car mechanics"), ("automoveis", "cars"),
         ("aviacao", "aviation"), ("aviao", "airplane"), ("avioes", "airplanes"), ("piloto", "pilot"), ("pilotos", "pilots"),
+        ("agricultura", "agriculture"), ("agronegocio", "agribusiness"), ("agro", "farming"), ("fazenda", "farm"), ("pecuaria", "livestock farming"), ("campo", "farming"),
         ("esportes", "sports"), ("esporte", "sports"), ("futebol americano", "nfl"), ("futebol", "soccer"),
         ("basquete", "basketball"), ("tenis", "tennis"),
         ("humor", "comedy"), ("comedia", "comedy"), ("engracado", "funny"), ("piadas", "jokes"), ("piada", "joke"),
@@ -981,12 +992,22 @@ extension LearningInterest {
         switch self {
         case .technology: ["technology", "tech", "computer", "computers", "phone", "phones", "iphone", "mac", "software", "apps", "artificial intelligence", "laptop", "internet"]
         case .business: ["business", "work", "working", "company", "companies", "money", "career", "job", "jobs", "office", "entrepreneur", "entrepreneurs", "invest", "investment"]
+        case .career: ["career", "job", "jobs", "interview", "resume", "hiring", "salary", "office", "manager", "boss", "workplace", "remote work", "promotion", "linkedin", "coworker"]
+        case .finance: ["finance", "financial", "money", "saving", "invest", "investing", "investment", "stock", "stocks", "market", "economy", "economic", "inflation", "bank", "banking", "budget", "wealth", "tax", "taxes"]
         case .travel: ["travel", "travelling", "traveling", "trip", "trips", "airport", "hotel", "vacation", "holiday", "tourist", "tourism", "passport", "flight", "flights"]
+        case .livingAbroad: ["abroad", "living", "america", "country", "countries", "move", "moving", "immigrant", "immigration", "visa", "rent", "apartment", "culture", "american", "canadian", "college", "university", "expat"]
+        case .shopping: ["shop", "shopping", "store", "buy", "buying", "price", "cost", "customer", "order", "ordering", "coffee", "cafe", "supermarket", "grocery", "clothes", "brand", "brands"]
         case .movies: ["movie", "movies", "film", "films", "cinema", "actor", "actors", "actress", "acting", "director", "netflix", "television", "tv", "series"]
+        case .music: ["music", "song", "songs", "singer", "singing", "band", "album", "guitar", "piano", "concert", "musician", "artist", "pop", "rock", "grammy"]
         case .news: ["news", "headlines", "election", "government", "president", "minister", "policy", "journalist", "reporter", "reporters", "politics", "economic", "economy"]
+        case .history: ["history", "historical", "ancient", "century", "war", "empire", "king", "queen", "world", "country", "geography", "map", "civilization", "museum"]
         case .lifestyle: ["life", "day", "today", "daily", "friend", "friends", "family", "home", "house", "morning", "night", "lunch", "dinner", "routine", "relationship", "relationships"]
+        case .health: ["health", "healthy", "doctor", "doctors", "medical", "medicine", "hospital", "sleep", "brain", "body", "pain", "heart", "mental", "therapy", "vitamin", "symptoms"]
         case .science: ["science", "scientific", "scientist", "scientists", "physics", "chemistry", "biology", "space", "planet", "universe", "gravity", "research", "experiment", "experiments", "brain", "quantum"]
+        case .engineering: ["engineering", "engineer", "engineers", "build", "building", "built", "construction", "bridge", "machine", "machines", "design", "structure", "architecture", "electricity", "energy", "factory"]
+        case .cars: ["car", "cars", "drive", "driving", "engine", "motor", "truck", "trucks", "vehicle", "tire", "tires", "wheel", "highway", "tesla", "ford", "toyota", "mechanic"]
         case .aviation: ["aviation", "airplane", "airplanes", "aircraft", "pilot", "pilots", "cockpit", "runway", "airline", "airlines", "flight", "flights", "flying", "airport", "landing"]
+        case .agriculture: ["farm", "farming", "farmer", "farmers", "agriculture", "crop", "crops", "tractor", "soil", "plant", "plants", "harvest", "cattle", "cow", "cows", "livestock", "ranch", "garden"]
         case .sports: ["sport", "sports", "football", "basketball", "baseball", "soccer", "tennis", "hockey", "nfl", "nba", "athlete", "athletes", "championship", "touchdown", "super bowl"]
         case .humor: ["funny", "comedy", "comedian", "comedians", "joke", "jokes", "laugh", "laughing", "hilarious", "humor", "humour", "roast", "roasted", "conan"]
         case .gaming: ["game", "games", "gaming", "gamer", "gamers", "xbox", "playstation", "nintendo", "steam", "fortnite", "minecraft", "pokemon", "zelda", "gta", "console"]
@@ -1000,12 +1021,22 @@ extension LearningInterest {
         switch self {
         case .technology: "using a computer"
         case .business: "at work"
+        case .career: "job interview easy English"
+        case .finance: "saving money finance simple English"
         case .travel: "at the airport hotel"
+        case .livingAbroad: "living abroad in America"
+        case .shopping: "shopping at the store ordering food"
         case .movies: "talking about movies"
+        case .music: "talking about music songs"
         case .news: "news easy English"
+        case .history: "history facts simple English"
         case .lifestyle: "daily routine"
+        case .health: "at the doctor health tips"
         case .science: "science simple English"
+        case .engineering: "engineering how things are built"
+        case .cars: "how cars work driving"
         case .aviation: "on an airplane"
+        case .agriculture: "life on a farm agriculture"
         case .sports: "talking about sports"
         case .humor: "funny conversation"
         case .gaming: "video games"
@@ -1019,12 +1050,22 @@ extension LearningInterest {
         switch self {
         case .technology: "technology"
         case .business: "business interviews"
+        case .career: "career job interview advice"
+        case .finance: "personal finance money economy"
         case .travel: "travel experiences"
+        case .livingAbroad: "living abroad cultural differences"
+        case .shopping: "shopping store customer experience"
         case .movies: "movies and series"
+        case .music: "music artist song interview"
         case .news: "news discussion"
+        case .history: "history geography explained"
         case .lifestyle: "daily life conversations"
+        case .health: "doctor health medicine explained"
         case .science: "science explained"
+        case .engineering: "engineering construction explained"
+        case .cars: "cars driving engine review"
         case .aviation: "aviation pilots"
+        case .agriculture: "farming agriculture explained"
         case .sports: "sports interviews"
         case .humor: "comedy stories"
         case .gaming: "video games"
@@ -1038,12 +1079,22 @@ extension LearningInterest {
         switch self {
         case .technology: ["UCc_ycus0q7DSd85ZkmEY5ig"]
         case .business: ["UCnjgxChqYYnyoqO4k_Q1d6Q"]
+        case .career: ["UC0v-tlzsn0QZwJnkiaUSJVQ"]
+        case .finance: ["UCK7tptUDHh-RYDsdxO1-5QQ"]
         case .travel: ["UCRUZXUjZKnKrar1LARRc1IQ"]
+        case .livingAbroad: ["UCFKE7WVJfvaHW5q283SxchA"]
+        case .shopping: ["UCbAwSkqJ1W_Eg7wr3cp5BUA"]
         case .movies: ["UCgRQHK8Ttr1j9xCEpCAlgbQ", "UCowq59Fx3ykFKujwDcisqPQ"]
+        case .music: ["UCe9f_3dK3jK-fF5wP8_m6wA"]
         case .news: ["UCHaHD477h-FeBbVh9Sh7syA"]
+        case .history: ["UCsooa4yRKGN_zEE8iknghZA"]
         case .lifestyle: ["UCAg6WsUmUZsxlJ-tOfoYR4w"]
+        case .health: ["UC0QHWhjbe5fGJEPz3sVb6nw"]
         case .science: ["UCqoAEDirJPjEUFcF2FklnBA", "UCJIfeSCssxSC_Dhc5s7woww"]
+        case .engineering: ["UC6107grRI4m0o2-emgoDnAA"]
+        case .cars: ["UCsqjHFMB_JYTaEnf_vmTNqg"]
         case .aviation: ["UCx8Thl4BbkOwslTGXzPJx0A", "UCTbcSRduRJJTMaQhUVqywRw"]
+        case .agriculture: ["UC4Tklxku1yPcRIumycLVwIQ", "UCA1y-4TJdVEcSMWN9OZfGSA"]
         case .sports: ["UCVRm2Ho8cL3lvWDyp2ayuFw"]
         case .humor: ["UCi7GJNg51C3jgmYTUwqoUXA"]
         case .gaming: ["UCT6QFE3peNry9PdO5uGj96g"]

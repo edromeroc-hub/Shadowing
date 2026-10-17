@@ -27,6 +27,11 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    match /approvedMusic/{videoID} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
     match /shortSignals/{uid} {
       allow get, list, delete: if isOwner(uid);
       allow create, update: if false;
@@ -40,7 +45,7 @@ service cloud.firestore {
           && request.resource.data.videoID == videoID
           && request.resource.data.level in ['beginner', 'intermediate', 'advanced']
           && request.resource.data.interests is list
-          && request.resource.data.interests.size() <= 14
+          && request.resource.data.interests.size() <= 24
           && request.resource.data.viewed == true
           && request.resource.data.updatedAt == request.time
           && (!('reaction' in request.resource.data) || request.resource.data.reaction in ['liked', 'hidden', 'neutral']);

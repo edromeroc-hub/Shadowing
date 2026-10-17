@@ -7,6 +7,8 @@ final class AppModel {
     var profile: LearningProfile
     var hasCompletedOnboarding: Bool
     var selectedTab: AppTab = .today
+    /// O perfil abre por cima da aba atual (ícone no topo), em vez de ocupar uma aba.
+    var isProfilePresented = false
     private(set) var profileUpdatedAt: Date
 
     private let defaults: UserDefaults
@@ -181,6 +183,6 @@ enum AppTab: Hashable {
     case today
     case explore
     case shorts
+    case music
     case progress
-    case profile
 }

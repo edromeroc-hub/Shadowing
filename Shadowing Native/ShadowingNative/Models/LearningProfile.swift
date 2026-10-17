@@ -203,12 +203,22 @@ enum LearningGoal: String, CaseIterable, Codable, Identifiable, Sendable {
 enum LearningInterest: String, CaseIterable, Codable, Identifiable, Sendable {
     case technology
     case business
+    case career
+    case finance
     case travel
+    case livingAbroad
+    case shopping
     case movies
+    case music
     case news
+    case history
     case lifestyle
+    case health
     case science
+    case engineering
+    case cars
     case aviation
+    case agriculture
     case sports
     case humor
     case gaming
@@ -222,12 +232,22 @@ enum LearningInterest: String, CaseIterable, Codable, Identifiable, Sendable {
         switch self {
         case .technology: "Tecnologia"
         case .business: "Negócios"
+        case .career: "Carreira & trabalho"
+        case .finance: "Economia & finanças"
         case .travel: "Viagens"
+        case .livingAbroad: "Morar fora"
+        case .shopping: "Compras & restaurantes"
         case .movies: "Cinema & séries"
+        case .music: "Música & cultura pop"
         case .news: "Notícias"
+        case .history: "História & geografia"
         case .lifestyle: "Vida real"
+        case .health: "Saúde & medicina"
         case .science: "Ciência"
+        case .engineering: "Engenharia & obras"
+        case .cars: "Carros & motores"
         case .aviation: "Aviação"
+        case .agriculture: "Agro & campo"
         case .sports: "Esportes"
         case .humor: "Humor"
         case .gaming: "Vídeo games"
@@ -241,12 +261,22 @@ enum LearningInterest: String, CaseIterable, Codable, Identifiable, Sendable {
         switch self {
         case .technology: "cpu.fill"
         case .business: "chart.line.uptrend.xyaxis"
+        case .career: "briefcase.fill"
+        case .finance: "dollarsign.circle.fill"
         case .travel: "globe.americas.fill"
+        case .livingAbroad: "house.and.flag.fill"
+        case .shopping: "bag.fill"
         case .movies: "film.fill"
+        case .music: "music.mic"
         case .news: "newspaper.fill"
+        case .history: "globe.desk.fill"
         case .lifestyle: "person.2.fill"
+        case .health: "cross.case.fill"
         case .science: "atom"
+        case .engineering: "wrench.and.screwdriver.fill"
+        case .cars: "car.fill"
         case .aviation: "airplane.departure"
+        case .agriculture: "leaf.fill"
         case .sports: "sportscourt.fill"
         case .humor: "face.smiling.inverse"
         case .gaming: "gamecontroller.fill"

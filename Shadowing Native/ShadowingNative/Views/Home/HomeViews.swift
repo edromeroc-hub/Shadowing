@@ -37,13 +37,7 @@ struct TodayView: View {
             .scrollIndicators(.hidden)
         }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    appModel.selectedTab = .profile
-                } label: {
-                    Image(systemName: "person.crop.circle.fill")
-                }
-            }
+            ToolbarItem(placement: .topBarTrailing) { ProfileToolbarButton() }
         }
         .navigationDestination(item: $importRequest) { request in
             YouTubeImportView(initialLink: request.link)
@@ -527,6 +521,7 @@ struct ExploreView: View {
         }
         .navigationTitle("Vídeos")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { ProfileToolbarButton() } }
         // Fundo visível: sem ele, o conteúdo rolado passava por baixo do título e do relógio.
         .toolbarBackground(.visible, for: .navigationBar)
         .onChange(of: appModel.profile.interests) { _, interests in
@@ -631,7 +626,7 @@ struct YouTubeImportRequest: Identifiable, Hashable {
     let link: String
 }
 
-private struct FilterChip: View {
+struct FilterChip: View {
     let title: String
     let isSelected: Bool
     let action: () -> Void
@@ -776,6 +771,7 @@ struct ProgressViewScreen: View {
         }
         .navigationTitle("Progresso")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { ProfileToolbarButton() } }
         // Fundo visível: sem ele, o conteúdo rolado passava por baixo do título e do relógio.
         .toolbarBackground(.visible, for: .navigationBar)
     }

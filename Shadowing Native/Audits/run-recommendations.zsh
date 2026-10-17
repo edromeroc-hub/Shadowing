@@ -11,6 +11,7 @@ xcrun swiftc -module-cache-path "$AUDIT_BUILD/module-cache" -parse-as-library -s
  ShadowingNative/Models/YouTubeTranscript.swift \
  ShadowingNative/Models/ShadowingPhrase.swift \
  ShadowingNative/Services/StudyProgressStore.swift \
+ ShadowingNative/Models/MusicCatalog.swift \
  ShadowingNative/App/AppModel.swift \
  ShadowingNative/Services/ShadowingLessonBuilder.swift \
  ShadowingNative/Services/ShortDifficultyEstimator.swift \

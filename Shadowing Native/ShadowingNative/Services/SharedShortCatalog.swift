@@ -9,14 +9,14 @@ struct PreparedShortLesson {
     let affinity: [String: Int]
 }
 
-private struct CatalogSegment: Decodable {
+struct CatalogSegment: Decodable {
     let text: String
     let start: Double
     let end: Double
     let hasWordTiming: Bool
 }
 
-private struct CatalogPhrase: Decodable {
+struct CatalogPhrase: Decodable {
     let text: String
     let start: Double
     let end: Double
@@ -25,7 +25,8 @@ private struct CatalogPhrase: Decodable {
     let endingHasWordTiming: Bool
 }
 
-private struct CatalogPayload: Decodable {
+/// Formato `payload` versão 1, comum a `approvedShorts` e `approvedMusic` (os campos extras de música são ignorados).
+struct CatalogPayload: Decodable {
     let version: Int
     let videoID: String
     let title: String
@@ -95,6 +96,8 @@ final class SharedShortCatalog {
     // sempre os mesmos Shorts primeiro (IDs "-…", "0…"). Cada sessão começa num ID aleatório e depois dá a volta.
     private var startID = SharedShortCatalog.randomDocumentID()
     private var hasWrapped = false
+    private var matchingInterestsOnly = true
+    private var seenVideoIDs: Set<String> = []
     private(set) var hasMore = true
 
     func reset(for level: EnglishLevel) {
@@ -102,6 +105,8 @@ final class SharedShortCatalog {
         cursor = nil
         startID = Self.randomDocumentID()
         hasWrapped = false
+        matchingInterestsOnly = true
+        seenVideoIDs = []
         hasMore = true
     }
 
@@ -124,9 +129,11 @@ final class SharedShortCatalog {
         guard hasMore else { return [] }
         var query: Query = Firestore.firestore().collection("approvedShorts")
             .whereField("level", isEqualTo: level.rawValue)
-        let interests = profile.interests.map(\.rawValue).sorted()
-        if !interests.isEmpty {
+        let interests = Array(profile.interests.map(\.rawValue).sorted().prefix(10))
+        if matchingInterestsOnly, !interests.isEmpty {
             query = query.whereField("interests", arrayContainsAny: interests)
+        } else {
+            matchingInterestsOnly = false
         }
         query = query.order(by: FieldPath.documentID()).limit(to: 30)
         if let cursor {
@@ -138,17 +145,32 @@ final class SharedShortCatalog {
         let snapshot = try await query.getDocuments()
         cursor = snapshot.documents.last
         let lessons = snapshot.documents.compactMap { document -> PreparedShortLesson? in
-            guard document.data()["status"] as? String == "approved",
+            guard !seenVideoIDs.contains(document.documentID),
+                  document.data()["status"] as? String == "approved",
                   let payload = document.data()["payload"] as? String,
                   let record = try? JSONDecoder().decode(CatalogPayload.self, from: Data(payload.utf8)),
                   record.videoID == document.documentID,
-                  record.level == level.rawValue else { return nil }
-            return record.preparedLesson()
+                  record.level == level.rawValue,
+                  let lesson = record.preparedLesson() else { return nil }
+            seenVideoIDs.insert(lesson.item.videoID)
+            return lesson
         }
         if snapshot.documents.count == 30 {
             hasMore = true
         } else if hasWrapped {
-            hasMore = false
+            if matchingInterestsOnly {
+                // Acabaram os Shorts verificados dos interesses escolhidos: abre a 2ª camada com todos os demais interesses do mesmo nível.
+                matchingInterestsOnly = false
+                cursor = nil
+                startID = Self.randomDocumentID()
+                hasWrapped = false
+                hasMore = true
+                if lessons.count < 10 {
+                    return lessons + (try await nextPage(for: profile))
+                }
+            } else {
+                hasMore = false
+            }
         } else {
             // Chegou ao fim dos IDs: volta ao início e completa a página com os anteriores ao ponto de partida.
             hasWrapped = true

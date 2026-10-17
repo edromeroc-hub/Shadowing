@@ -7,6 +7,22 @@
         { "fieldPath": "level", "order": "ASCENDING" },
         { "fieldPath": "interests", "arrayConfig": "CONTAINS" }
       ]
+    },
+    {
+      "collectionGroup": "approvedMusic",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "level", "order": "ASCENDING" },
+        { "fieldPath": "genres", "arrayConfig": "CONTAINS" }
+      ]
+    },
+    {
+      "collectionGroup": "approvedMusic",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "format", "order": "ASCENDING" },
+        { "fieldPath": "level", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

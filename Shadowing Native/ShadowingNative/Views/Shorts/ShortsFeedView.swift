@@ -241,6 +241,7 @@ struct ShortsFeedView: View {
             preferredQueries: Set(progressStore.recentShortSearches.map { $0.query.lowercased() }),
             sharedScores: sharedScores,
             pinnedIDs: pinnedShortIDs,
+            includeOtherInterests: true,
             catalog: catalog
         )
         if resetPosition {
@@ -303,8 +304,30 @@ struct ShortsFeedView: View {
                     return
                 }
             }
+            // 3ª camada: quando todos os Shorts verificados do Firestore (do interesse e dos demais interesses) acabam,
+            // busca de 3 em 3 ao vivo no YouTube aplicando o Filtro de Qualidade B.
+            if await ShortsDiscoveryService.shared.isConfigured {
+                let batch = try await ShortsDiscoveryService.shared.discoverBatch(
+                    for: appModel.profile,
+                    feedback: progressStore.shortFeedback,
+                    channels: Array(progressStore.shortChannels.values),
+                    searches: progressStore.recentShortSearches,
+                    excluding: Set(catalog.map(\.videoID)),
+                    limit: 3
+                )
+                guard !Task.isCancelled, discoveryRequestID == requestID else { return }
+                let wasEmpty = items.isEmpty
+                for item in batch.items where !catalog.contains(where: { $0.videoID == item.videoID }) {
+                    catalog.append(item)
+                }
+                if !batch.items.isEmpty {
+                    rankFeed(resetPosition: wasEmpty)
+                    discoveryNotice = nil
+                }
+                canLoadMore = batch.hasMoreCandidates
+                return
+            }
             canLoadMore = false
-            discoveryNotice = items.isEmpty ? nil : "Você viu todos os Shorts do seu nível por hoje. Novos chegam todos os dias."
         } catch {
             guard !Task.isCancelled, discoveryRequestID == requestID else { return }
             discoveryNotice = error.localizedDescription
@@ -551,6 +574,7 @@ private struct ShortLessonPage: View {
                 }
                 Button("Não quero ver", systemImage: "eye.slash") { onReact(.hidden) }
                 Button("Ver outra sugestão", systemImage: "arrow.down", action: onShuffle)
+                Button("Perfil", systemImage: "person.crop.circle") { appModel.isProfilePresented = true }
             } label: {
                 Image(systemName: "ellipsis")
                     .frame(width: 44, height: 44)

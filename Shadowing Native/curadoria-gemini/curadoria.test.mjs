@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { appWouldAccept, buildLesson } from './lib/lesson.mjs';
 import { RateLimitedError, buildTimedWords, fetchCaptions, formatWordsForReading, parseJSON3, speechStats, syllables } from './lib/words.mjs';
+import { MUSIC_GENRES, buildMusicIndex, cleanMusicEntry } from './lib/music.mjs';
 import { shortsCheck } from './lib/youtube-data.mjs';
 
 const asrEvent = { tStartMs: 1000, dDurationMs: 2000, segs: [
@@ -104,4 +105,29 @@ test('nível e temas precisam ser valores conhecidos pelo app', () => {
   const { errors } = buildLesson({ videoID: 'abcdefghijk', info, words, timingQuality: 'word', decision: { level: 'easy', interests: ['comedy'], phrases: [] } });
   assert.ok(errors.some((error) => error.startsWith('level')));
   assert.ok(errors.some((error) => error.startsWith('interests')));
+});
+
+test('limpa artista e música vindos do título do YouTube', () => {
+  assert.deepEqual(cleanMusicEntry({ artist: 'Adele', trackTitle: 'Adele - Hello (Official Music Video)', channel: 'Adele' }), { artist: 'Adele', trackTitle: 'Hello' });
+  assert.deepEqual(cleanMusicEntry({ artist: 'Bohemian Rhapsody - Queen', trackTitle: 'Bohemian Rhapsody - Queen', channel: 'Queen Official' }), { artist: 'Queen', trackTitle: 'Bohemian Rhapsody' });
+  assert.deepEqual(cleanMusicEntry({ artist: 'Queen Official', trackTitle: 'Queen - Crazy Little Thing Called Love', channel: 'Queen Official' }), { artist: 'Queen', trackTitle: 'Crazy Little Thing Called Love' });
+  assert.equal(cleanMusicEntry({ artist: 'Adele', trackTitle: 'Send My Love (To Your New Lover)', channel: 'Adele' }).trackTitle, 'Send My Love (To Your New Lover)');
+  assert.equal(cleanMusicEntry({ artist: 'Adele', trackTitle: 'Hello - Live at the BBC', channel: 'Adele' }).trackTitle, 'Hello - Live at the BBC');
+});
+
+test('índice de músicas junta grafias do artista e tira duplicatas', () => {
+  const song = (videoID, artist, trackTitle, channel, format = 'video') => ({ videoID, artist, trackTitle, channel, format, genres: ['rock', 'funk'], level: 'beginner', durationSeconds: 212.4 });
+  const entries = buildMusicIndex([
+    song('aaaaaaaaaaa', 'Imagine Dragons', 'Imagine Dragons - Believer', 'ImagineDragonsVEVO'),
+    song('bbbbbbbbbbb', 'Imagine Dragons', 'Imagine Dragons - Believer (Official Video)', 'ImagineDragons'),
+    song('ccccccccccc', 'OneRepublic', 'Counting Stars', 'OneRepublicVEVO'),
+    song('ddddddddddd', 'Kacey Musgraves', 'Slow Burn', 'NPR Music'),
+    song('eeeeeeeeeee', 'Imagine Dragons', 'Believer', 'ImagineDragons', 'short'),
+    song('bad id', 'X', 'Y', 'Z'),
+  ]);
+  assert.deepEqual(entries.map((entry) => entry.v), ['aaaaaaaaaaa', 'ccccccccccc', 'ddddddddddd', 'eeeeeeeeeee']);
+  assert.deepEqual(entries[0], { v: 'aaaaaaaaaaa', f: 'video', a: 'Imagine Dragons', t: 'Believer', g: ['rock'], l: 'beginner', d: 212 });
+  assert.equal(entries[1].a, 'OneRepublic');
+  assert.equal(entries[2].a, 'Kacey Musgraves');
+  assert.ok(MUSIC_GENRES.includes('metal'));
 });

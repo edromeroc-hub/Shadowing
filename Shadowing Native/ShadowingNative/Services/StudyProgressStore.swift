@@ -116,6 +116,8 @@ final class StudyProgressStore {
     private(set) var shortFeedback: [String: ShortFeedback]
     private(set) var shortChannels: [String: ShortChannelPreference]
     private(set) var shortSearches: [String: ShortSearchPreference]
+    /// `nil` até o aluno escolher os estilos na primeira visita à aba Músicas.
+    private(set) var musicPreferences: MusicPreferences?
     private var recordedPhraseKeys: Set<String>
 
     private let defaults: UserDefaults
@@ -126,6 +128,7 @@ final class StudyProgressStore {
     private let shortFeedbackKey = "shadowing.native.progress.short-feedback"
     private let shortChannelsKey = "shadowing.native.progress.short-channels"
     private let shortSearchesKey = "shadowing.native.progress.short-searches"
+    private let musicKey = "shadowing.native.progress.music"
     private var activeAccountID: String?
 
     init(defaults: UserDefaults = .standard) {
@@ -136,6 +139,7 @@ final class StudyProgressStore {
         shortFeedback = Self.decode([String: ShortFeedback].self, key: shortFeedbackKey, defaults: defaults) ?? [:]
         shortChannels = Self.decode([String: ShortChannelPreference].self, key: shortChannelsKey, defaults: defaults) ?? [:]
         shortSearches = Self.decode([String: ShortSearchPreference].self, key: shortSearchesKey, defaults: defaults) ?? [:]
+        musicPreferences = Self.decode(MusicPreferences.self, key: musicKey, defaults: defaults)
         recordedPhraseKeys = Self.decode(Set<String>.self, key: phrasesKey, defaults: defaults) ?? []
     }
 
@@ -177,6 +181,7 @@ final class StudyProgressStore {
         let nextFeedbackKey = storageKey(shortFeedbackKey, accountID: accountID)
         let nextChannelsKey = storageKey(shortChannelsKey, accountID: accountID)
         let nextSearchesKey = storageKey(shortSearchesKey, accountID: accountID)
+        let nextMusicKey = storageKey(musicKey, accountID: accountID)
 
         if activeAccountID == nil, accountID != nil {
             for (source, destination) in [
@@ -186,7 +191,8 @@ final class StudyProgressStore {
                 (videosKey, nextVideosKey),
                 (shortFeedbackKey, nextFeedbackKey),
                 (shortChannelsKey, nextChannelsKey),
-                (shortSearchesKey, nextSearchesKey)
+                (shortSearchesKey, nextSearchesKey),
+                (musicKey, nextMusicKey)
             ] {
                 if defaults.object(forKey: destination) == nil, let data = defaults.data(forKey: source) {
                     defaults.set(data, forKey: destination)
@@ -203,6 +209,7 @@ final class StudyProgressStore {
         shortFeedback = Self.decode([String: ShortFeedback].self, key: nextFeedbackKey, defaults: defaults) ?? [:]
         shortChannels = Self.decode([String: ShortChannelPreference].self, key: nextChannelsKey, defaults: defaults) ?? [:]
         shortSearches = Self.decode([String: ShortSearchPreference].self, key: nextSearchesKey, defaults: defaults) ?? [:]
+        musicPreferences = Self.decode(MusicPreferences.self, key: nextMusicKey, defaults: defaults)
     }
 
     func deleteAccountData(for accountID: String) {
@@ -213,6 +220,7 @@ final class StudyProgressStore {
         defaults.removeObject(forKey: storageKey(shortFeedbackKey, accountID: accountID))
         defaults.removeObject(forKey: storageKey(shortChannelsKey, accountID: accountID))
         defaults.removeObject(forKey: storageKey(shortSearchesKey, accountID: accountID))
+        defaults.removeObject(forKey: storageKey(musicKey, accountID: accountID))
         if activeAccountID == accountID {
             activeAccountID = nil
             summaries = [:]
@@ -222,6 +230,7 @@ final class StudyProgressStore {
             shortFeedback = [:]
             shortChannels = [:]
             shortSearches = [:]
+            musicPreferences = nil
         }
     }
 
@@ -271,6 +280,22 @@ final class StudyProgressStore {
     func setShortChannel(_ id: String, title: String, followed: Bool) {
         guard !id.isEmpty else { return }
         shortChannels[id] = ShortChannelPreference(id: id, title: title, isFollowed: followed, updatedAt: Date())
+        save()
+    }
+
+    func setMusicGenres(_ genres: Set<MusicGenre>) {
+        var preferences = musicPreferences ?? MusicPreferences()
+        preferences.genres = genres
+        preferences.updatedAt = Date()
+        musicPreferences = preferences
+        save()
+    }
+
+    func setMusicArtist(_ artist: String, followed: Bool) {
+        var preferences = musicPreferences ?? MusicPreferences()
+        if followed { preferences.followedArtists.insert(artist) } else { preferences.followedArtists.remove(artist) }
+        preferences.updatedAt = Date()
+        musicPreferences = preferences
         save()
     }
 
@@ -347,6 +372,9 @@ final class StudyProgressStore {
             if let local = shortSearches[key], local.updatedAt > search.updatedAt { continue }
             shortSearches[key] = search
         }
+        if let remoteMusic = remote.music, remoteMusic.updatedAt > (musicPreferences?.updatedAt ?? .distantPast) {
+            musicPreferences = remoteMusic
+        }
         save()
     }
 
@@ -358,7 +386,8 @@ final class StudyProgressStore {
             videos: videos,
             shortFeedback: shortFeedback,
             shortChannels: shortChannels,
-            shortSearches: shortSearches
+            shortSearches: shortSearches,
+            music: musicPreferences
         )
     }
 
@@ -432,6 +461,9 @@ final class StudyProgressStore {
         if let data = try? JSONEncoder().encode(shortSearches) {
             defaults.set(data, forKey: storageKey(shortSearchesKey, accountID: activeAccountID))
         }
+        if let musicPreferences, let data = try? JSONEncoder().encode(musicPreferences) {
+            defaults.set(data, forKey: storageKey(musicKey, accountID: activeAccountID))
+        }
     }
 
     private func storageKey(_ base: String, accountID: String?) -> String {
@@ -464,9 +496,10 @@ struct StudyProgressSnapshot: Codable {
     var shortFeedback: [String: ShortFeedback]
     var shortChannels: [String: ShortChannelPreference]
     var shortSearches: [String: ShortSearchPreference]
+    var music: MusicPreferences?
 
     private enum CodingKeys: String, CodingKey {
-        case summaries, listeningWords, recordedPhraseKeys, videos, shortFeedback, shortChannels, shortSearches
+        case summaries, listeningWords, recordedPhraseKeys, videos, shortFeedback, shortChannels, shortSearches, music
     }
 
     init(
@@ -476,7 +509,8 @@ struct StudyProgressSnapshot: Codable {
         videos: [String: StudiedVideo],
         shortFeedback: [String: ShortFeedback],
         shortChannels: [String: ShortChannelPreference] = [:],
-        shortSearches: [String: ShortSearchPreference] = [:]
+        shortSearches: [String: ShortSearchPreference] = [:],
+        music: MusicPreferences? = nil
     ) {
         self.summaries = summaries
         self.listeningWords = listeningWords
@@ -485,6 +519,7 @@ struct StudyProgressSnapshot: Codable {
         self.shortFeedback = shortFeedback
         self.shortChannels = shortChannels
         self.shortSearches = shortSearches
+        self.music = music
     }
 
     init(from decoder: Decoder) throws {
@@ -496,5 +531,6 @@ struct StudyProgressSnapshot: Codable {
         shortFeedback = try container.decodeIfPresent([String: ShortFeedback].self, forKey: .shortFeedback) ?? [:]
         shortChannels = try container.decodeIfPresent([String: ShortChannelPreference].self, forKey: .shortChannels) ?? [:]
         shortSearches = try container.decodeIfPresent([String: ShortSearchPreference].self, forKey: .shortSearches) ?? [:]
+        music = try container.decodeIfPresent(MusicPreferences.self, forKey: .music)
     }
 }

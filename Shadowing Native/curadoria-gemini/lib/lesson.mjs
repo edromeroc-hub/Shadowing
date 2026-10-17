@@ -7,8 +7,12 @@ export const LEVELS = {
   advanced: { maxWords: 18, maxSeconds: 6.0 },
 };
 
-export const INTERESTS = ['technology', 'business', 'travel', 'movies', 'news', 'lifestyle', 'science',
-  'aviation', 'sports', 'humor', 'gaming', 'fitness', 'cooking', 'streetInterviews'];
+export const INTERESTS = [
+  'technology', 'business', 'career', 'finance', 'travel', 'livingAbroad', 'shopping',
+  'movies', 'music', 'news', 'history', 'lifestyle', 'health', 'science',
+  'engineering', 'cars', 'aviation', 'agriculture', 'sports', 'humor', 'gaming',
+  'fitness', 'cooking', 'streetInterviews',
+];
 
 const weakEndings = new Set(['the', 'a', 'an', 'to', 'of', 'my', 'your', 'his', 'her', 'our', 'their', 'is', 'are',
   'was', 'were', 'in', 'on', 'at', 'for', 'with', 'from', 'and', 'but', 'or', 'so', 'which', 'because', 'that',

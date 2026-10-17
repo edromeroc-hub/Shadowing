@@ -9,6 +9,7 @@ struct ShortsRecommendationEngine: Sendable {
         preferredQueries: Set<String> = [],
         sharedScores: [String: Int] = [:],
         pinnedIDs: Set<String> = [],
+        includeOtherInterests: Bool = false,
         catalog: [YouTubeShortItem] = YouTubeShortItem.demoCatalog
     ) -> [YouTubeShortItem] {
         var seenIDs = Set<String>()
@@ -16,7 +17,8 @@ struct ShortsRecommendationEngine: Sendable {
         let eligible = catalog.filter { item in
             (pinnedIDs.contains(item.videoID) ||
                 item.level == profile.level &&
-                (!item.interests.isDisjoint(with: profile.interests) ||
+                (includeOtherInterests ||
+                    !item.interests.isDisjoint(with: profile.interests) ||
                     item.channelID.map(preferredChannelIDs.contains) == true ||
                     item.searchQuery.map { preferredQueries.contains($0.lowercased()) } == true)) &&
                 feedback[item.videoID]?.reaction != .hidden &&
@@ -29,22 +31,31 @@ struct ShortsRecommendationEngine: Sendable {
             for interest in item.interests { preferredInterests[interest, default: 0] += 1 }
         }
         var ranked = eligible.sorted { first, second in
-            let firstScore = score(first, for: profile, history: history, feedback: feedback, preferredInterests: preferredInterests, preferredChannelIDs: preferredChannelIDs, preferredQueries: preferredQueries) + min(sharedScores[first.videoID, default: 0], 15)
-            let secondScore = score(second, for: profile, history: history, feedback: feedback, preferredInterests: preferredInterests, preferredChannelIDs: preferredChannelIDs, preferredQueries: preferredQueries) + min(sharedScores[second.videoID, default: 0], 15)
+            let firstScore = score(first, for: profile, history: history, feedback: feedback, preferredInterests: preferredInterests, preferredChannelIDs: preferredChannelIDs, preferredQueries: preferredQueries, pinnedIDs: pinnedIDs) + min(sharedScores[first.videoID, default: 0], 15)
+            let secondScore = score(second, for: profile, history: history, feedback: feedback, preferredInterests: preferredInterests, preferredChannelIDs: preferredChannelIDs, preferredQueries: preferredQueries, pinnedIDs: pinnedIDs) + min(sharedScores[second.videoID, default: 0], 15)
             return firstScore == secondScore ? first.videoID < second.videoID : firstScore > secondScore
         }
         var result: [YouTubeShortItem] = []
         var topicCounts: [LearningInterest: Int] = [:]
         while !ranked.isEmpty {
+            let hasPrimaryMatches = ranked.contains { item in
+                !item.interests.isDisjoint(with: profile.interests) ||
+                    pinnedIDs.contains(item.videoID) ||
+                    item.channelID.map(preferredChannelIDs.contains) == true ||
+                    item.searchQuery.map { preferredQueries.contains($0.lowercased()) } == true
+            }
             let leastCount = ranked.flatMap { $0.interests.intersection(profile.interests) }
                 .map { topicCounts[$0, default: 0] }.min() ?? 0
             let balancedIndices = ranked.indices.filter { index in
                 let item = ranked[index]
                 let topics = item.interests.intersection(profile.interests)
                 if topics.isEmpty {
-                    return pinnedIDs.contains(item.videoID) ||
-                        item.channelID.map(preferredChannelIDs.contains) == true ||
-                        item.searchQuery.map { preferredQueries.contains($0.lowercased()) } == true
+                    if hasPrimaryMatches {
+                        return pinnedIDs.contains(item.videoID) ||
+                            item.channelID.map(preferredChannelIDs.contains) == true ||
+                            item.searchQuery.map { preferredQueries.contains($0.lowercased()) } == true
+                    }
+                    return true
                 }
                 return topics.contains { topicCounts[$0, default: 0] == leastCount }
             }
@@ -67,9 +78,15 @@ struct ShortsRecommendationEngine: Sendable {
         feedback: [String: ShortFeedback],
         preferredInterests: [LearningInterest: Int],
         preferredChannelIDs: Set<String>,
-        preferredQueries: Set<String>
+        preferredQueries: Set<String>,
+        pinnedIDs: Set<String>
     ) -> Int {
-        let interestScore = item.interests.intersection(profile.interests).count * 5
+        let matchingCount = item.interests.intersection(profile.interests).count
+        let interestScore = matchingCount * 5
+        let isExplicitlyPreferred = pinnedIDs.contains(item.videoID) ||
+            item.channelID.map(preferredChannelIDs.contains) == true ||
+            item.searchQuery.map({ preferredQueries.contains($0.lowercased()) }) == true
+        let otherInterestPenalty = (matchingCount == 0 && !isExplicitlyPreferred) ? 15 : 0
         let historyScore = item.interests.reduce(0) { $0 + min(preferredInterests[$1, default: 0], 3) }
         let watchedPenalty = history.contains { $0.videoID == item.videoID } ? 3 : 0
         let liked = feedback.values.filter { $0.reaction == .liked }
@@ -84,6 +101,6 @@ struct ShortsRecommendationEngine: Sendable {
         let channelScore = item.channelID.map(preferredChannelIDs.contains) == true ? 18 : 0
         let searchScore = item.searchQuery.map({ preferredQueries.contains($0.lowercased()) }) == true ? 12 : 0
         return interestScore + historyScore + channelScore + searchScore + min(likedTopics, 5) * 3 + min(creatorLikes, 3) * 6
-            - min(hiddenTopics, 3) * 2 - min(creatorHides, 3) * 4 - watchedPenalty + likedItemBonus - difficultyPenalty
+            - min(hiddenTopics, 3) * 2 - min(creatorHides, 3) * 4 - watchedPenalty - otherInterestPenalty + likedItemBonus - difficultyPenalty
     }
 }

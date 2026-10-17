@@ -39,6 +39,9 @@ targets:
       path: ShadowingNative/Info.plist
       properties:
         CFBundleDisplayName: ShadowingApp
+        # Número da build fica aqui: o `xcodegen generate` reescreve o Info.plist.
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "6"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

@@ -7,6 +7,9 @@ struct YouTubeImportView: View {
     @Environment(StudyProgressStore.self) private var progressStore
     private let link: String
     private let previewTranscript: YouTubeTranscript?
+    /// Aula já pronta no catálogo (aba Músicas): usa as frases da letra em vez de baixar e dividir a legenda.
+    private let catalogLesson: (@MainActor () async throws -> PreparedShortLesson)?
+    private let isShortOverride: Bool?
     @State private var transcript: YouTubeTranscript?
     @State private var phrases: [ShadowingPhrase] = []
     @State private var selectedPhraseID: ShadowingPhrase.ID?
@@ -30,9 +33,16 @@ struct YouTubeImportView: View {
         case phrases
     }
 
-    init(initialLink: String = "", previewTranscript: YouTubeTranscript? = nil) {
+    init(
+        initialLink: String = "",
+        previewTranscript: YouTubeTranscript? = nil,
+        isShort: Bool? = nil,
+        catalogLesson: (@MainActor () async throws -> PreparedShortLesson)? = nil
+    ) {
         link = initialLink
         self.previewTranscript = previewTranscript
+        isShortOverride = isShort
+        self.catalogLesson = catalogLesson
     }
 
     private var videoID: String? {
@@ -467,7 +477,7 @@ struct YouTubeImportView: View {
         }
         loadedVideoID = videoID
         isTypingResponse = false
-        loadedIsShort = YouTubeLinkParser.isShortsURL(link)
+        loadedIsShort = isShortOverride ?? YouTubeLinkParser.isShortsURL(link)
         playerController.setPlaybackAllowed(true)
         isLoading = true
         transcript = nil
@@ -479,17 +489,27 @@ struct YouTubeImportView: View {
 
         do {
             let loadedTranscript: YouTubeTranscript
+            var catalogPhrases: [ShadowingPhrase]?
             if let previewTranscript {
                 loadedTranscript = previewTranscript
+            } else if let catalogLesson {
+                let lesson = try await catalogLesson()
+                loadedTranscript = lesson.transcript
+                catalogPhrases = lesson.phrases
+            } else if let lesson = try? await MusicCatalogService.shared.lesson(for: videoID) {
+                // Música reaberta pelo histórico ou por link: usa a letra do catálogo, não a legenda automática.
+                loadedTranscript = lesson.transcript
+                catalogPhrases = lesson.phrases
             } else {
                 loadedTranscript = try await YouTubeTranscriptService.shared.fetchTranscript(videoID: videoID)
             }
             guard loadRevision == requestRevision, !Task.isCancelled else { return }
-            let preparedPhrases = ShadowingLessonBuilder(level: appModel.profile.level).build(from: loadedTranscript)
+            let preparedPhrases = catalogPhrases ?? ShadowingLessonBuilder(level: appModel.profile.level).build(from: loadedTranscript)
             guard !preparedPhrases.isEmpty else { throw TranscriptError.emptyCaptions }
             transcript = loadedTranscript
             phrases = preparedPhrases
-            estimatedVideoLevel = estimateVideoLevel(from: loadedTranscript)
+            // Música canta mais devagar que a fala: a estimativa de nível por fala não se aplica.
+            estimatedVideoLevel = catalogPhrases == nil ? estimateVideoLevel(from: loadedTranscript) : nil
 
             if let firstPhrase = preparedPhrases.first {
                 let savedStart = progressStore.videos[videoID]?.phraseStart

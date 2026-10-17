@@ -15,7 +15,13 @@ struct ShortDifficultyEstimator {
         let wordsPerMinute = Double(words.count) * 60 / duration
         guard wordsPerMinute < 270 else { return nil }
         let longWordShare = Double(words.filter { $0.count >= 8 }.count) / Double(words.count)
+        let punctuatedCount = transcript.segments
+            .flatMap { $0.text.split(whereSeparator: \.isWhitespace) }
+            .filter { $0.range(of: #"[.?!,;:]"#, options: .regularExpression) != nil }
+            .count
+        guard punctuatedCount * 28 >= words.count else { return nil }
         let phrases = ShadowingLessonBuilder().build(from: transcript)
+        guard phrases.count >= 3 else { return nil }
         let phraseLengths = phrases.map {
             $0.text.split(whereSeparator: { !$0.isLetter && $0 != "'" }).count
         }

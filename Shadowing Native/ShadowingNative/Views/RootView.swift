@@ -99,18 +99,28 @@ struct MainTabView: View {
                 .tag(AppTab.shorts)
 
             NavigationStack {
+                MusicHomeView()
+            }
+            .tabItem { Label("Músicas", systemImage: "music.note.list") }
+            .tag(AppTab.music)
+
+            NavigationStack {
                 ProgressViewScreen()
             }
             .tabItem { Label("Progresso", systemImage: "chart.line.uptrend.xyaxis") }
             .tag(AppTab.progress)
-
-            NavigationStack {
-                ProfileView()
-            }
-            .tabItem { Label("Perfil", systemImage: "person.crop.circle.fill") }
-            .tag(AppTab.profile)
         }
         .tint(ShadowingTheme.blue)
+        .sheet(isPresented: $model.isProfilePresented) {
+            NavigationStack {
+                ProfileView()
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Fechar") { appModel.isProfilePresented = false }
+                        }
+                    }
+            }
+        }
         .ignoresSafeArea(.keyboard, edges: appModel.selectedTab == .shorts ? .bottom : [])
     }
 }

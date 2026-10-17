@@ -68,13 +68,13 @@ export async function searchShorts(key, query, { days = 180, order = 'viewCount'
 }
 
 // Playlist só de Shorts do canal ("UUSH" + id sem "UC"): atalho não oficial do YouTube, 1 unidade de cota.
-export async function channelShorts(key, channelID, fetchImpl) {
+export async function channelShorts(key, channelID, { max = 200 } = {}, fetchImpl) {
   if (!/^UC[A-Za-z0-9_-]{22}$/.test(channelID)) throw new Error(`ID de canal inválido: ${channelID}`);
   for (const prefix of ['UUSH', 'UU']) {
     try {
       const items = [];
       let pageToken = '';
-      while (items.length < 100) {
+      while (items.length < max) {
         const parameters = { part: 'contentDetails', playlistId: prefix + channelID.slice(2), maxResults: 50 };
         if (pageToken) parameters.pageToken = pageToken;
         const response = await request(key, 'playlistItems', parameters, fetchImpl);
